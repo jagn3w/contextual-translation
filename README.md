@@ -48,6 +48,33 @@ bin/brakeman --no-pager         # security
 bin/rails graphql:dump_schema   # after any GraphQL change; commit schema.graphql
 ```
 
+### Local API testing (curl)
+
+Create an access code, start the server, then run the smoke script — it signs in with a cookie
+jar, runs the `viewer` query and a `translate` mutation, signs out, and checks the session is gone:
+
+```sh
+cd backend
+bin/rails access_codes:create LABEL="Local testing"      # prints the code once
+bin/rails server
+# in another terminal, from the repo root:
+ORIGIN=http://localhost:5173 bin/smoke ctx-XXXX-... http://localhost:3000
+```
+
+`ORIGIN` must be the origin Rails accepts (`APP_HOST`, `localhost:5173` in development). Through
+the Vite dev server (`pnpm dev`), `bin/smoke ctx-XXXX-...` needs no extra settings. Against
+production: `bin/smoke ctx-XXXX-... https://translate.jagnew.io`. `TEXT`, `CONTEXT`, `FROM` and
+`TO` change the sample translation.
+
+By hand, every state-changing request needs the JSON content type and the Origin header:
+
+```sh
+curl -c jar -b jar -H 'Origin: http://localhost:5173' -H 'Content-Type: application/json' \
+  -d '{"code":"ctx-XXXX-..."}' http://localhost:3000/api/session
+curl -c jar -b jar -H 'Origin: http://localhost:5173' -H 'Content-Type: application/json' \
+  -d '{"query":"{ viewer { accessCodeLabel } }"}' http://localhost:3000/graphql
+```
+
 ### Translation eval
 
 `backend/eval/cases.yml` holds 18 cases covering ambiguity ("bat" at a ballpark vs a cave),
