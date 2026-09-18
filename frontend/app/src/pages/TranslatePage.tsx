@@ -22,8 +22,6 @@ type Translation = NonNullable<TranslateMutation["translate"]["translation"]> & 
 // one id would let a retryable toast's "Try again" survive into a later, non-retryable error.
 let toastCounter = 0;
 
-/** Retrying is only offered when it could succeed soon; a daily cap shouldn't invite clicks. */
-const MAX_RETRY_BUTTON_WAIT_SECONDS = 60;
 
 /** Length in Unicode code points — how the backend (Ruby String#length) counts the limits. */
 export function codePointLength(text: string): number {
@@ -76,13 +74,14 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   // A response that arrives after the page is gone (e.g. sign-out mid-request) is dropped.
   const mounted = useRef(true);
   const lastToastId = useRef<string | null>(null);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on every mount: StrictMode (dev) mounts, cleans up and mounts again with the same refs.
+    mounted.current = true;
+    return () => {
       mounted.current = false;
       if (lastToastId.current !== null) toast.dismiss(lastToastId.current);
-    },
-    [],
-  );
+    };
+  }, []);
   // Screen-reader announcements: one always-mounted live region, updated per request.
   const [announcement, setAnnouncement] = useState("");
 
@@ -148,10 +147,11 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
         setTranslation({ ...payload.translation, fromText: sourceText, fromContext: context });
         setAnnouncement("Translation ready.");
       } else if (error !== undefined) {
-        // Typed, anticipated failures (design D3.3): one message per code. Retry is offered only
-        // when it could work soon.
+        // Typed, anticipated failures (design D3.3): one message per code. Try again is offered
+        // only when retrying now could work: with a known wait, the message states it instead,
+        // and an early click would just be refused and count against the limits.
         const retryAfter = error.retryAfterSeconds ?? null;
-        const offerRetry = error.retryable && (retryAfter ?? 0) <= MAX_RETRY_BUTTON_WAIT_SECONDS;
+        const offerRetry = error.retryable && (retryAfter === null || retryAfter <= 0);
         const message = translateErrorMessage(error.code, retryAfter, error.message);
         setAnnouncement("Translation failed."); // the toast itself is announced by sonner
         toast.error(message, { id: toastId, ...(offerRetry ? { action: retry } : {}) });

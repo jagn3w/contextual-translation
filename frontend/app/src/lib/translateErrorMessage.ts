@@ -21,9 +21,10 @@ export function translateErrorMessage(
       return "The source and target languages are the same.";
     case "RATE_LIMITED":
       // The server names which limit it was (per minute, or today's cap for this device or code).
-      return retryAfterSeconds !== null && retryAfterSeconds > 60
+      if (retryAfterSeconds === null) return serverMessage;
+      return retryAfterSeconds > 60
         ? `${serverMessage} It resets ${formatWait(retryAfterSeconds)}.`
-        : serverMessage;
+        : `${serverMessage} Try again ${formatWait(retryAfterSeconds)}.`;
     case "TIMEOUT":
       return "The translation took too long. Try again, or shorten the text.";
     case "UPSTREAM_RATE_LIMITED":

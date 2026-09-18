@@ -18,6 +18,13 @@ module Claude
 
     # A token with less than this left is treated as expired.
     MIN_VALIDITY_SECONDS = 60.0
+    # A forced refresh right after another *forced* fetch reuses it: after a 401 the translator
+    # forces a refresh, then the SDK's own token cache asks again with force_refresh. The first
+    # forced refresh always fetches, even if a routine fetch just happened.
+    FORCE_DEDUPE_SECONDS = 5.0
+
+    # No token arrived within the caller's time budget (the fetch keeps going in the background).
+    class TokenUnavailable < StandardError; end
     INITIAL_BACKOFF_SECONDS = 5.0
     MAX_BACKOFF_SECONDS = 60.0
 
@@ -41,6 +48,7 @@ module Claude
       @fetch_lock = T.let(Mutex.new, Mutex)
       @current = T.let(nil, T.nilable(Anthropic::Credentials::AccessToken))
       @fetched_at = T.let(0.0, Float)
+      @forced_at = T.let(nil, T.nilable(Float))
       @thread = T.let(nil, T.nilable(Thread))
       @started = T.let(false, T::Boolean)
     end
@@ -54,6 +62,29 @@ module Claude
 
       @logger.warn("Claude WIF token: no usable cached token; fetching synchronously")
       fetch!(seen: token, force: force_refresh)
+    end
+
+    # A usable token within `timeout` seconds, or TokenUnavailable. The translator calls this
+    # before each Claude request so waiting for credentials counts against the request's
+    # deadline; the SDK's own call then finds the token already cached. A fetch that outlives
+    # the timeout finishes on its own thread and still refreshes the cache.
+    sig { params(timeout: Float, force: T::Boolean).returns(Anthropic::Credentials::AccessToken) }
+    def ensure_fresh(timeout:, force: false)
+      token = @state_lock.synchronize { @current }
+      return token if token && !force && usable?(token)
+      raise TokenUnavailable, "no time left to fetch a Claude access token" unless timeout.positive?
+
+      result = Thread::Queue.new
+      Thread.new do
+        result << fetch!(seen: token, force:)
+      rescue StandardError => e
+        result << e
+      end
+      outcome = result.pop(timeout:)
+      raise TokenUnavailable, "timed out after #{timeout.round(1)}s fetching a Claude access token" if outcome.nil?
+      raise outcome if outcome.is_a?(StandardError)
+
+      T.cast(outcome, Anthropic::Credentials::AccessToken)
     end
 
     # The SDK binds its base URL into the provider; pass it through.
@@ -129,13 +160,15 @@ module Claude
     end
     def fetch!(seen:, force:)
       @fetch_lock.synchronize do
-        current = @state_lock.synchronize { @current }
+        current, forced_at = @state_lock.synchronize { [ @current, @forced_at ] }
         return current if !force && current && !current.equal?(seen) && usable?(current)
+        return current if force && current && forced_at && @clock.call - forced_at < FORCE_DEDUPE_SECONDS
 
         token = @provider.call
         @state_lock.synchronize do
           @current = token
           @fetched_at = @clock.call
+          @forced_at = @fetched_at if force
         end
         @logger.info("Claude WIF token refreshed; expires in #{(token.expires_at.to_f - @clock.call).round}s")
         token

@@ -15,9 +15,10 @@ describe("translateErrorMessage", () => {
   });
 
   it("uses the server's per-limit message for our rate limits, adding long waits", () => {
-    expect(translateErrorMessage("RATE_LIMITED", 42, "You're translating quickly — try again in a moment.")).toBe(
-      "You're translating quickly — try again in a moment.",
+    expect(translateErrorMessage("RATE_LIMITED", 42, "You're translating quickly.")).toBe(
+      "You're translating quickly. Try again in 42 seconds.",
     );
+    expect(translateErrorMessage("RATE_LIMITED", null, "You're translating quickly.")).toBe("You're translating quickly.");
     expect(translateErrorMessage("RATE_LIMITED", 61_200, "This device has reached today's translation limit.")).toBe(
       "This device has reached today's translation limit. It resets in 17 hours.",
     );

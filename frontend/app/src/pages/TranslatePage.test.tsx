@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../App.tsx";
 import { installFakeServer, json, unauthenticated, viewer, type FakeServer } from "../test/fakeServer.ts";
@@ -165,7 +166,7 @@ describe("TranslatePage", () => {
     expect(calls).toBe(2);
   });
 
-  it("shows our per-minute rate limit with the server's message and a retry", async () => {
+  it("shows our per-minute rate limit with the wait, and no retry that would be refused", async () => {
     server.onGraphql("Translate", () =>
       json({
         data: {
@@ -176,7 +177,7 @@ describe("TranslatePage", () => {
               {
                 __typename: "TranslateError",
                 code: "RATE_LIMITED",
-                message: "You're translating quickly — try again in a moment.",
+                message: "You're translating quickly.",
                 retryable: true,
                 retryAfterSeconds: 30,
               },
@@ -190,8 +191,8 @@ describe("TranslatePage", () => {
     await user.type(screen.getByLabelText("Text to translate"), "Hello");
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
 
-    expect(await screen.findByText("You're translating quickly — try again in a moment.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(await screen.findByText("You're translating quickly. Try again in 30 seconds.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
   });
 
   it("a daily cap says when it resets and offers no retry", async () => {
@@ -437,5 +438,22 @@ describe("TranslatePage", () => {
 
     expect(screen.getByText("10,000 / 10,000")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Update Translation" })).toBeEnabled();
+  });
+
+  it("translates under StrictMode (dev mounts, unmounts and remounts every component)", async () => {
+    server.onGraphql("Viewer", () => viewer());
+    server.onGraphql("Translate", () => translated("Hola", null));
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await screen.findByText("Side project");
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    expect(await screen.findByText("Hola")).toBeInTheDocument();
   });
 });

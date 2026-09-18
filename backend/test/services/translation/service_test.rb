@@ -87,6 +87,21 @@ class Translation::ServiceTest < ActiveSupport::TestCase
     assert_includes error.message, "Too many translations"
   end
 
+  test "when a minute and a daily limit are both exceeded, the daily one is reported" do
+    day = Time.current.beginning_of_day + 1.day
+    15.times do |minute|
+      travel_to(day + minute.minutes + 1.second) { 10.times { @service.call(request("Hi"), session: @session) } }
+    end
+    travel_to(day + 20.minutes + 1.second) do
+      10.times { assert_raises(Translation::Error) { @service.call(request("Hi"), session: @session) } }
+
+      error = assert_raises(Translation::Error) { @service.call(request("Hi"), session: @session) }
+
+      assert_includes error.message, "today"
+      assert_operator error.retry_after_seconds, :>, 3600
+    end
+  end
+
   test "invalid requests don't count against the limits" do
     travel_to(Time.current.beginning_of_minute + 1.minute + 1.second)
     20.times { assert_raises(Translation::Error) { @service.call(request(""), session: @session) } }

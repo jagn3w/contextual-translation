@@ -24,7 +24,7 @@ module Translation
     SESSION_LIMITS = T.let(
       [
         Limit.new(name: "session-minute", count: 10, period: 1.minute,
-          message: "You're translating quickly — try again in a moment."),
+          message: "You're translating quickly."),
         Limit.new(name: "session-day", count: 150, period: 1.day,
           message: "This device has reached today's translation limit.")
       ].freeze,
@@ -34,7 +34,7 @@ module Translation
     CODE_LIMITS = T.let(
       [
         Limit.new(name: "code-minute", count: 30, period: 1.minute,
-          message: "Too many translations right now — try again in a moment."),
+          message: "Too many translations right now."),
         Limit.new(name: "code-day", count: 500, period: 1.day,
           message: "This access code has reached today's translation limit.")
       ].freeze,
@@ -57,7 +57,8 @@ module Translation
         count = increment("translate:#{limit.name}:#{subject}:#{window}", limit.period)
         [ limit, retry_after ] if count > limit.count
       end
-      limit, retry_after = exceeded.first
+      # Report the longest wait, so a daily cap isn't disguised as a per-minute one.
+      limit, retry_after = exceeded.max_by { |_limit, seconds| seconds }
       return if limit.nil?
 
       raise Error.new(ErrorCode::RATE_LIMITED, limit.message, retry_after_seconds: retry_after)

@@ -61,6 +61,53 @@ class Claude::ClientFactoryTest < ActiveSupport::TestCase
     assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, error.code
   end
 
+  test "a 401 invalidates the WIF token and retries once with a fresh one" do
+    sts = Aws::STS::Client.new(region: "us-east-1", stub_responses: true)
+    sts.stub_responses(:get_web_identity_token, web_identity_token: "sts.jwt.token")
+    exchange = stub_request(:post, "https://api.anthropic.com/v1/oauth/token")
+      .to_return({ status: 200, headers: { "Content-Type" => "application/json" }, body: { access_token: "revoked", expires_in: 3600 }.to_json },
+                 { status: 200, headers: { "Content-Type" => "application/json" }, body: { access_token: "fresh", expires_in: 3600 }.to_json })
+    stub_request(:post, %r{\Ahttps://api\.anthropic\.com/v1/messages})
+      .with(headers: { "Authorization" => "Bearer revoked" })
+      .to_return(status: 401, headers: { "Content-Type" => "application/json" },
+        body: { type: "error", error: { type: "authentication_error", message: "token revoked" } }.to_json)
+    fresh = stub_request(:post, %r{\Ahttps://api\.anthropic\.com/v1/messages})
+      .with(headers: { "Authorization" => "Bearer fresh" })
+      .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: {
+        id: "m", type: "message", role: "assistant", model: "claude-opus-5",
+        content: [ { type: "text", text: { translation: "Hola", notes: "" }.to_json } ],
+        stop_reason: "end_turn", stop_sequence: nil, stop_details: nil, container: nil,
+        usage: { input_tokens: 1, output_tokens: 1 }
+      }.to_json)
+    client = Claude::ClientFactory.build(WIF_ENV.to_h, sts:)
+
+    result = Translation::ClaudeTranslator.new(client:).translate(
+      Translation::Request.new(source_text: "Hello", source_language: Translation::Language::EN,
+        target_language: Translation::Language::ES, context: nil)
+    )
+
+    assert_equal "Hola", result.text
+    assert_requested exchange, times: 2 # no duplicate fetch from the SDK's own forced refresh
+    assert_requested fresh, times: 1
+  end
+
+  test "no time left for credentials means UPSTREAM_UNREACHABLE, without calling Claude" do
+    provider = Object.new
+    provider.define_singleton_method(:call) { raise "must not fetch" }
+    refresher = Claude::TokenRefresher.new(provider:)
+    client = Anthropic::Client.new(credentials: refresher, max_retries: 0, timeout: 30)
+    now = 0.0
+    translator = Translation::ClaudeTranslator.new(client:, clock: -> { now += 50.0 })
+
+    error = assert_raises(Translation::Error) do
+      translator.translate(Translation::Request.new(source_text: "Hello", source_language: Translation::Language::EN,
+        target_language: Translation::Language::ES, context: nil))
+    end
+
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, error.code
+    assert_not_requested :post, %r{api\.anthropic\.com}
+  end
+
   test "wif requests exchange an STS identity token for an access token" do
     sts = Aws::STS::Client.new(region: "us-east-1", stub_responses: true)
     sts.stub_responses(:get_web_identity_token, web_identity_token: "sts.jwt.token")
