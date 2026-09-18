@@ -48,6 +48,19 @@ bin/brakeman --no-pager         # security
 bin/rails graphql:dump_schema   # after any GraphQL change; commit schema.graphql
 ```
 
+### Translation eval
+
+`backend/eval/cases.yml` holds 18 cases covering ambiguity ("bat" at a ballpark vs a cave),
+formality (Spanish *usted*/*tú*, Japanese keigo) and regional vocabulary (Spain vs Mexico), plus a
+prompt-injection check. Run them against Claude (this costs money):
+
+```sh
+TRANSLATOR=claude CLAUDE_AUTH=api_key ANTHROPIC_API_KEY=... bin/rails eval:translations EFFORTS=low,medium
+```
+
+It prints each translation with Claude's notes, a pass count per category, and p50/p95 latency per
+effort level (target: p95 under 10 s).
+
 After adding or upgrading gems, regenerate type information with `bin/tapioca gems` (and
 `bin/tapioca dsl` after model or route changes).
 
