@@ -1,0 +1,49 @@
+# Contextual Translate
+
+Translation that takes context into account. Tell Claude *where* you are and *who* you're
+talking to, and it picks the right meaning ("Is this a bat?" at a baseball game), the right
+formality (Spanish *tú*/*usted*, Japanese plain/polite/honorific) and the right regional variety.
+
+The design, decisions (D-numbers) and task list live in `design/` and are synced with jkb.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `backend/` | Rails 8 API: GraphQL (`graphql-ruby`), Sorbet `typed: strict`, Postgres |
+| `backend/schema.graphql` | The committed GraphQL schema — the type contract the frontend codegen reads |
+| `frontend/` | pnpm workspace; `frontend/app` is the Vite + React + TypeScript SPA |
+| `design/` | Design doc and tasks (jkb-synced) |
+
+## Toolchain
+
+Ruby 3.4.10, Node 22, pnpm 10 (pinned in `mise.toml`), PostgreSQL 16. The dev container has all
+of them; elsewhere, `mise install`.
+
+## Backend
+
+```sh
+cd backend
+bundle install
+cp .env.example .env            # defaults use the fake translator; no API key needed
+export PGHOST=127.0.0.1         # dev container: Postgres listens on TCP only
+bin/rails db:prepare
+bin/rails server                # http://localhost:3000
+```
+
+Checks:
+
+```sh
+bin/rails test                  # Minitest
+bundle exec srb tc              # Sorbet
+bin/rubocop                     # style (rails-omakase)
+bin/brakeman --no-pager         # security
+bin/rails graphql:dump_schema   # after any GraphQL change; commit schema.graphql
+```
+
+After adding or upgrading gems, regenerate type information with `bin/tapioca gems` (and
+`bin/tapioca dsl` after model or route changes).
+
+## License
+
+MIT — see `LICENSE`.

@@ -1,0 +1,31 @@
+# See https://help.github.com/articles/ignoring-files for more about ignoring files.
+
+# Ignore bundler config.
+/.bundle
+
+# Ignore all environment files.
+/.env*
+!/.env.example
+
+# Ignore all logfiles and tempfiles.
+/log/*
+/tmp/*
+!/log/.keep
+!/tmp/.keep
+
+# Ignore pidfiles, but keep the directory.
+/tmp/pids/*
+!/tmp/pids/
+!/tmp/pids/.keep
+
+# Built SPA copied in by the Docker build (design D1.6).
+/public/index.html
+/public/assets/
+
+# Secrets are env vars, never Rails credentials.
+/config/master.key
+/config/credentials/*.key
+
+# Sandbox mount placeholders (dev container), never real project files.
+/.claude/
+/.mcp.json

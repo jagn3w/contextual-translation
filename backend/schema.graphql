@@ -1,0 +1,6 @@
+type Query {
+  """
+  Liveness check for the GraphQL endpoint.
+  """
+  ping: String!
+}

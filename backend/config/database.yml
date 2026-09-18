@@ -1,0 +1,20 @@
+# PostgreSQL. Local dev/test connect over TCP via PGHOST (see README); the `vscode` role uses
+# trust auth in the dev container, so no username/password is configured here.
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  max_connections: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+
+development:
+  <<: *default
+  database: contextual_translate_development
+
+test:
+  <<: *default
+  database: contextual_translate_test
+
+# Production uses a single database from DATABASE_URL (CapRover's Postgres app). Solid Cache
+# shares it rather than using a separate cache database (design D5.3).
+production:
+  <<: *default
+  url: <%= ENV["DATABASE_URL"] %>
