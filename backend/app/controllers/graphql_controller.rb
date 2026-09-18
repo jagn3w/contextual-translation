@@ -14,8 +14,14 @@ class GraphqlController < ApplicationController
 
   sig { void }
   def execute
+    query = params[:query]
+    unless query.is_a?(String)
+      render json: { errors: [ { message: "query must be a string" } ] }, status: :bad_request
+      return
+    end
+
     result = ContextualTranslateSchema.execute(
-      params[:query],
+      query,
       variables: prepare_variables(params[:variables]),
       context: { current_session: current_session },
       operation_name: params[:operationName]

@@ -40,6 +40,10 @@ module Translation
         Error.new(ErrorCode::SERVICE_MISCONFIGURED, "The translation service isn't configured correctly.")
       when Anthropic::Errors::APIStatusError
         budget_exceeded if error.status == 402 || error.type.to_s == "billing_error"
+      when Seahorse::Client::NetworkingError, Timeout::Error, SocketError, SystemCallError, IOError
+        # Raised outside the SDK's transport rescue: the WIF token exchange (Net::HTTP) and the
+        # STS call run while the SDK builds auth headers, so their network failures arrive raw.
+        Error.new(ErrorCode::UPSTREAM_UNREACHABLE, "Couldn't reach Claude.")
       end
     end
 

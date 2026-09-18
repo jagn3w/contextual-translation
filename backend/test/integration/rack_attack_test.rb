@@ -92,6 +92,33 @@ class RackAttackTest < ActionDispatch::IntegrationTest
     assert_response :too_many_requests
   end
 
+  test "a format suffix doesn't escape the sign-in throttle" do
+    post "/api/session.json", params: { code: BAD_CODE }, headers: json_headers, as: :json
+
+    assert_response :not_found
+  end
+
+  test "a spoofed Forwarded header doesn't change the client IP" do
+    travel_to(Time.current.beginning_of_minute + 1.minute + 1.second)
+    6.times do |i|
+      post_json "/api/session", { code: BAD_CODE },
+        headers: { "REMOTE_ADDR" => "10.0.0.2", "Forwarded" => "for=198.51.100.#{i}" }
+    end
+
+    assert_response :too_many_requests
+  end
+
+  test "X-Forwarded-For from the proxy identifies the client" do
+    travel_to(Time.current.beginning_of_minute + 1.minute + 1.second)
+    5.times do
+      post_json "/api/session", { code: BAD_CODE }, headers: { "REMOTE_ADDR" => "10.0.0.2", "X-Forwarded-For" => "203.0.113.7" }
+    end
+
+    post_json "/api/session", { code: BAD_CODE }, headers: { "REMOTE_ADDR" => "10.0.0.2", "X-Forwarded-For" => "203.0.113.8" }
+
+    assert_response :unauthorized
+  end
+
   test "health checks are never throttled" do
     100.times { get "/up" }
 

@@ -144,6 +144,49 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     assert_translation_error :UPSTREAM_UNREACHABLE
   end
 
+  test "no retry when it couldn't finish inside the deadline" do
+    now = 0.0
+    translator = Translation::ClaudeTranslator.new(
+      client: Anthropic::Client.new(api_key: "k", max_retries: 0, timeout: 5),
+      sleeper: ->(_) { }, clock: -> { now }
+    )
+    stub = stub_request(:post, MESSAGES_URL).to_return do
+      now += 50.0 # the first attempt took 50 s
+      error_response(500, "api_error")
+    end
+
+    error = assert_raises(Translation::Error) { translator.translate(@request) }
+
+    assert_equal Translation::ErrorCode::UPSTREAM_ERROR, error.code
+    assert_requested stub, times: 1
+  end
+
+  test "network failures outside the SDK's transport are UPSTREAM_UNREACHABLE" do
+    [ Seahorse::Client::NetworkingError.new(Errno::ECONNRESET.new), Net::OpenTimeout.new, SocketError.new("dns"),
+      Errno::ECONNREFUSED.new ].each do |raw|
+      assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, Translation::ClaudeErrorMapper.map(raw)&.code, raw.class.name
+    end
+  end
+
+  test "unparseable output is UPSTREAM_ERROR and its text is never logged" do
+    stub_request(:post, MESSAGES_URL).to_return(message_response(text: "not json: secret words"))
+    log = StringIO.new
+    translator = Translation::ClaudeTranslator.new(
+      client: Anthropic::Client.new(api_key: "k", max_retries: 0, timeout: 5), logger: ActiveSupport::Logger.new(log)
+    )
+
+    error = assert_raises(Translation::Error) { translator.translate(@request) }
+
+    assert_equal Translation::ErrorCode::UPSTREAM_ERROR, error.code
+    assert_not_includes log.string, "secret words"
+  end
+
+  test "accepts Rails.logger (a BroadcastLogger)" do
+    assert_nothing_raised do
+      Translation::ClaudeTranslator.new(client: Anthropic::Client.new(api_key: "k"), logger: Rails.logger)
+    end
+  end
+
   private
 
   def assert_translation_error(code)

@@ -88,6 +88,24 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
     assert_equal false, body.dig("data", "translate", "errors", 0, "retryable")
   end
 
+  test "one request can run only one translate" do
+    calls = 0
+    counting = Class.new do
+      include Translation::Translator
+      define_method(:translate) do |request|
+        calls += 1
+        Translation::FakeTranslator.new.translate(request)
+      end
+    end
+    Translation.translator = counting.new
+    input = "{ sourceText: \"Hi\", sourceLanguage: EN, targetLanguage: ES }"
+
+    body = graphql("mutation { a: translate(input: #{input}) { errors { code } } b: translate(input: #{input}) { errors { code } } }")
+
+    assert_match(/complexity/, body.dig("errors", 0, "message"))
+    assert_equal 0, calls
+  end
+
   test "rejects unknown languages at the schema level" do
     body = graphql(MUTATION, variables: { input: INPUT.merge(targetLanguage: "FR") })
 

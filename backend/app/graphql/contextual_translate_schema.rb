@@ -10,6 +10,7 @@ class ContextualTranslateSchema < GraphQL::Schema
   # Limit the depth and size of incoming queries.
   max_depth(15)
   max_query_string_tokens(5000)
+  max_complexity(150) # one translate (100) plus ordinary fields
   validate_max_errors(100)
 
   # The catch-all for failures nobody planned for (design D3.3): log the details, and give the

@@ -1,8 +1,9 @@
 Rails.application.routes.draw do
-  post "/graphql", to: "graphql#execute"
+  # format: false — rack-attack throttles these exact paths, so no "/graphql.json" variants.
+  post "/graphql", to: "graphql#execute", format: false
 
   namespace :api do
-    resource :session, only: %i[create destroy]
+    resource :session, only: %i[create destroy], format: false
   end
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
 

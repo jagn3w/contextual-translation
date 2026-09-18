@@ -32,6 +32,20 @@ class GraphqlEndpointTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
   end
 
+  test "rejects a query that isn't a string" do
+    sign_in
+    post_json "/graphql", { query: { nested: "x" } }
+
+    assert_response :bad_request
+  end
+
+  test "a format suffix isn't routed" do
+    sign_in
+    post_json "/graphql.json", { query: "{ viewer { accessCodeLabel } }" }
+
+    assert_response :not_found
+  end
+
   test "health check responds without a session" do
     get "/up"
 

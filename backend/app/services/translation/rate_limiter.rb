@@ -5,6 +5,11 @@ module Translation
   # Per-session and per-access-code translation limits (design D3.4). Enforced here rather than
   # in rack-attack so going over returns the typed RATE_LIMITED error. Counters are fixed windows
   # in Rails.cache (Solid Cache in production), shared by every Puma thread.
+  #
+  # Deliberate choices: if the cache is unavailable (Solid Cache's failsafe returns nil), the
+  # limiter fails open — the Anthropic workspace spend limit is the hard backstop. Every counter
+  # is incremented before checking, so an attempt refused by the per-code limit still counts
+  # against its session.
   class RateLimiter
     extend T::Sig
 

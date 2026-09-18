@@ -14,29 +14,36 @@ module Translation
     # Server-side refusal fallbacks: if the model declines, Anthropic retries on a substitute
     # model chosen by refusal category.
     FALLBACK_BETA = "server-side-fallback-2026-07-01"
+    # The whole translation, including the one retry, must finish inside CapRover's 60 s proxy
+    # timeout (design D2.2); a retry is only attempted if at least MIN_RETRY_SECONDS remain.
+    DEADLINE_SECONDS = 55.0
+    MIN_RETRY_SECONDS = 10.0
 
     sig do
       params(
         client: Anthropic::Client,
         model: String,
         effort: String,
-        logger: ActiveSupport::Logger,
-        sleeper: T.proc.params(seconds: Float).void
+        logger: T.any(::Logger, ActiveSupport::BroadcastLogger),
+        sleeper: T.proc.params(seconds: Float).void,
+        clock: T.proc.returns(Float)
       ).void
     end
     def initialize(client:, model: DEFAULT_MODEL, effort: DEFAULT_EFFORT, logger: Rails.logger,
-                   sleeper: ->(seconds) { sleep(seconds) })
+                   sleeper: ->(seconds) { sleep(seconds) },
+                   clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC).to_f })
       @client = client
       @model = model
       @effort = effort
       @logger = logger
       @sleeper = sleeper
+      @clock = clock
     end
 
     sig { override.params(request: Request).returns(Result) }
     def translate(request)
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC).to_f
-      message = with_one_retry { create_message(request) }
+      started = @clock.call
+      message = create_with_one_retry(request, started)
       log_usage(message, started)
       result_from(message)
     rescue StandardError => e
@@ -51,8 +58,8 @@ module Translation
 
     private
 
-    sig { params(request: Request).returns(Anthropic::Models::Beta::BetaMessage) }
-    def create_message(request)
+    sig { params(request: Request, timeout: T.nilable(Float)).returns(Anthropic::Models::Beta::BetaMessage) }
+    def create_message(request, timeout: nil)
       @client.beta.messages.create(
         model: @model,
         max_tokens: MAX_TOKENS,
@@ -63,22 +70,29 @@ module Translation
           format: { type: :json_schema, schema: Prompt::OUTPUT_SCHEMA }
         },
         fallbacks: :default,
-        betas: [ FALLBACK_BETA ]
+        betas: [ FALLBACK_BETA ],
+        request_options: timeout ? { timeout: } : {}
       )
     end
 
     # One retry for rate limits and server errors, never for timeouts: a timed-out request is
-    # already as slow as the user will tolerate (design D2.2). The SDK's own retries are off.
-    sig { params(block: T.proc.returns(Anthropic::Models::Beta::BetaMessage)).returns(Anthropic::Models::Beta::BetaMessage) }
-    def with_one_retry(&block)
-      block.call
+    # already as slow as the user will tolerate (design D2.2). The retry only happens if it can
+    # finish inside the overall deadline, and gets just the time that's left. The SDK's own
+    # retries are off.
+    sig { params(request: Request, started: Float).returns(Anthropic::Models::Beta::BetaMessage) }
+    def create_with_one_retry(request, started)
+      create_message(request)
     rescue Anthropic::Errors::RateLimitError, Anthropic::Errors::InternalServerError => e
       raise e if e.is_a?(Anthropic::Errors::RateLimitError) &&
         ClaudeErrorMapper.error_code(e) == ClaudeErrorMapper::TIER_SPEND_CAP_CODE
 
-      @logger.warn("Claude #{e.status} (request_id=#{e.request_id}); retrying once")
-      @sleeper.call(retry_delay(e))
-      block.call
+      delay = retry_delay(e)
+      remaining = DEADLINE_SECONDS - (@clock.call - started) - delay
+      raise e if remaining < MIN_RETRY_SECONDS
+
+      @logger.warn("Claude #{e.status} (request_id=#{e.request_id}); retrying once within #{remaining.round}s")
+      @sleeper.call(delay)
+      create_message(request, timeout: [ remaining, Claude::ClientFactory::TIMEOUT_SECONDS ].min)
     end
 
     sig { params(error: Anthropic::Errors::APIStatusError).returns(Float) }
@@ -96,11 +110,20 @@ module Translation
       end
 
       text = message.content.filter_map { |block| block.text if block.is_a?(Anthropic::Models::Beta::BetaTextBlock) }.join
-      parsed = JSON.parse(text)
-      translation = parsed["translation"]
-      raise TypeError, "structured output missing translation" unless translation.is_a?(String)
+      parsed = begin
+        JSON.parse(text)
+      rescue JSON::ParserError
+        nil
+      end
+      translation = parsed.is_a?(Hash) ? parsed["translation"] : nil
+      unless translation.is_a?(String)
+        # Structured outputs should make this impossible. Never log the text: it may contain
+        # the user's words (design D4.2).
+        @logger.error("Claude returned unparseable structured output (#{text.bytesize} bytes, stop=#{message.stop_reason})")
+        raise Error.new(ErrorCode::UPSTREAM_ERROR, "Claude returned an unreadable response.")
+      end
 
-      notes = parsed["notes"]
+      notes = T.cast(parsed, T::Hash[String, T.untyped])["notes"]
       Result.new(text: translation, notes: notes.is_a?(String) ? notes.presence : nil, model: message.model.to_s)
     end
 

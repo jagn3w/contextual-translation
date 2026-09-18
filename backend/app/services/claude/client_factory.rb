@@ -16,7 +16,9 @@ module Claude
     IDENTITY_TOKEN_TTL_SECONDS = 900
     # The SDK's own retries are off; ClaudeTranslator retries once, and never on timeouts (D2.2).
     TIMEOUT_SECONDS = 30.0
-    # Any of these silently outranks WIF in the SDK's credential resolution.
+    # With explicit WIF credentials the SDK ignores these today, but any default-constructed
+    # client (a console session, a future code path) would pick them up and bypass WIF — and their
+    # presence in production means the environment is misconfigured. Refuse to boot.
     CONFLICTING_ENV = T.let(%w[ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_PROFILE].freeze, T::Array[String])
 
     sig { params(env: T::Hash[String, String], sts: T.nilable(Aws::STS::Client)).returns(Anthropic::Client) }

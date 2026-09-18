@@ -43,6 +43,21 @@ class Claude::ClientFactoryTest < ActiveSupport::TestCase
     assert_raises(Claude::ClientFactory::ConfigurationError) { Claude::ClientFactory.build({ "CLAUDE_AUTH" => "oidc" }) }
   end
 
+  test "an STS network failure during WIF becomes UPSTREAM_UNREACHABLE" do
+    sts = Aws::STS::Client.new(region: "us-east-1", stub_responses: true)
+    sts.stub_responses(:get_web_identity_token, Seahorse::Client::NetworkingError.new(Errno::ECONNRESET.new))
+    client = Claude::ClientFactory.build(WIF_ENV.to_h, sts:)
+
+    error = assert_raises(Translation::Error) do
+      Translation::ClaudeTranslator.new(client:).translate(
+        Translation::Request.new(source_text: "Hello", source_language: Translation::Language::EN,
+          target_language: Translation::Language::ES, context: nil)
+      )
+    end
+
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, error.code
+  end
+
   test "wif requests exchange an STS identity token for an access token" do
     sts = Aws::STS::Client.new(region: "us-east-1", stub_responses: true)
     sts.stub_responses(:get_web_identity_token, web_identity_token: "sts.jwt.token")
