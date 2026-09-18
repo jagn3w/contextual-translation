@@ -114,6 +114,20 @@ The entrypoint runs `db:prepare` before Puma. Required env: `SECRET_KEY_BASE`, `
 `backend/.env.example`). Puma runs 8 threads by default (`RAILS_MAX_THREADS`) because a
 translation holds its thread for the whole Claude call.
 
+### Releasing
+
+`bin/release` builds the image on your machine for the x86 EC2 host (`docker buildx --platform
+linux/amd64`), pushes it to a private GHCR package tagged with the commit SHA, and runs
+`caprover deploy --imageName` — CapRover never builds anything. It refuses to run with uncommitted
+changes; `DRY_RUN=1` prints the commands instead.
+
+```sh
+IMAGE_REPO=ghcr.io/<owner>/contextual-translate bin/release
+```
+
+Needs Docker with buildx (logged in to ghcr.io) and the CapRover CLI (`pnpm add -g caprover`).
+`captain-definition` points at the Dockerfile as a fallback for building on the server.
+
 ## License
 
 MIT — see `LICENSE`.

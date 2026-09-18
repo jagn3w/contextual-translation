@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Build the production image on this machine, push it to GHCR, and tell CapRover to run it
+# (design D5.3). Run it from a clean checkout of the commit you want to release.
+#
+#   IMAGE_REPO=ghcr.io/<owner>/contextual-translate bin/release
+#
+# Environment:
+#   IMAGE_REPO          required, e.g. ghcr.io/jagnew/contextual-translate (private package)
+#   CAPROVER_URL        default https://captain.cr.jagnew.io
+#   CAPROVER_APP        default contextual-translate
+#   CAPROVER_PASSWORD   optional; the caprover CLI prompts when unset
+#   DRY_RUN=1           print the commands instead of running them
+#
+# Needs: docker with buildx (logged in to ghcr.io with a token that can write packages) and the
+# CapRover CLI (pnpm add -g caprover).
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+image_repo=${IMAGE_REPO:?set IMAGE_REPO, e.g. ghcr.io/<owner>/contextual-translate}
+caprover_url=${CAPROVER_URL:-https://captain.cr.jagnew.io}
+caprover_app=${CAPROVER_APP:-contextual-translate}
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Refusing to release with uncommitted changes:" >&2
+  git status --short >&2
+  exit 1
+fi
+
+sha=$(git rev-parse --short=12 HEAD)
+image="$image_repo:$sha"
+
+run() {
+  echo "+ $*"
+  [[ "${DRY_RUN:-}" == "1" ]] || "$@"
+}
+
+echo "Releasing $(git log -1 --format='%h %s') as $image"
+
+# The EC2 host is x86; this machine may be Apple Silicon.
+run docker buildx build --platform linux/amd64 --tag "$image" --push .
+
+deploy=(caprover deploy --caproverUrl "$caprover_url" --caproverApp "$caprover_app" --imageName "$image")
+[[ -n "${CAPROVER_PASSWORD:-}" ]] && deploy+=(--caproverPassword "$CAPROVER_PASSWORD")
+run "${deploy[@]}"
+
+echo
+echo "Released $image to $caprover_app. Next, from the CapRover app console:"
+echo "  bin/rails claude:auth_check"
+echo "and from here: bin/smoke <access-code> https://${APP_HOST:-translate.jagnew.io}"

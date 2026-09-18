@@ -1,0 +1,16 @@
+# Keep the build context small and free of local state and secrets.
+.git
+.jkb
+.scratch
+.claude
+.mcp.json
+design
+**/node_modules
+frontend/app/dist
+backend/.env*
+backend/log/*
+backend/tmp/*
+backend/spa
+backend/public/assets
+backend/vendor/bundle
+backend/.bundle
