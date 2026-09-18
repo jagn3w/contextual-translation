@@ -1,7 +1,11 @@
 import { useMutation } from "@apollo/client/react";
-import { type KeyboardEvent, useId, useState } from "react";
+import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import { toast } from "sonner";
 import { LanguageSelect } from "../components/LanguageSelect.tsx";
 import { type Language, TranslateDocument, type TranslateMutation, type ViewerQuery } from "../gql/graphql.ts";
+import { failureMessage } from "../lib/failureMessage.ts";
+import { describeRequestError } from "../lib/requestFailure.ts";
+import { translateErrorMessage } from "../lib/translateErrorMessage.ts";
 
 type Props = {
   viewer: ViewerQuery["viewer"];
@@ -9,6 +13,25 @@ type Props = {
 };
 
 type Translation = NonNullable<TranslateMutation["translate"]["translation"]>;
+
+const TOAST_ID = "translate-error";
+
+/** Seconds since `active` became true, ticking once a second; null when inactive. */
+function useElapsedSeconds(active: boolean): number | null {
+  const [elapsed, setElapsed] = useState<number | null>(null);
+  const started = useRef(0);
+  useEffect(() => {
+    if (!active) {
+      setElapsed(null);
+      return;
+    }
+    started.current = Date.now();
+    setElapsed(0);
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started.current) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return elapsed;
+}
 
 export const MAX_SOURCE_LENGTH = 10_000;
 export const MAX_CONTEXT_LENGTH = 2_000;
@@ -26,8 +49,8 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   const [sourceText, setSourceText] = useState("");
   const [context, setContext] = useState("");
   const [translation, setTranslation] = useState<Translation | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
   const [translate, { loading }] = useMutation(TranslateDocument);
+  const elapsed = useElapsedSeconds(loading);
 
   const stale =
     translation !== null &&
@@ -56,7 +79,7 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
 
   async function runTranslation() {
     if (!canTranslate) return;
-    setFailure(null);
+    toast.dismiss(TOAST_ID);
     try {
       const { data } = await translate({
         variables: {
@@ -64,13 +87,24 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
         },
       });
       const payload = data?.translate;
+      const error = payload?.errors[0];
       if (payload?.translation) {
         setTranslation(payload.translation);
-      } else if (payload && payload.errors.length > 0) {
-        setFailure(payload.errors.map((error) => error.message).join(" "));
+      } else if (error !== undefined) {
+        // Typed, anticipated failures (design D3.3): one message per code; retryable ones offer a retry.
+        toast.error(translateErrorMessage(error.code, error.retryAfterSeconds ?? null), {
+          id: TOAST_ID,
+          ...(error.retryable ? { action: { label: "Try again", onClick: () => void runTranslation() } } : {}),
+        });
       }
-    } catch {
-      setFailure("The translation failed. Try again.");
+    } catch (caught) {
+      const failure = describeRequestError(caught);
+      // An ended session is handled by the app, which returns to the access-code screen.
+      if (failure.kind === "unauthenticated") return;
+      toast.error(failureMessage(failure), {
+        id: TOAST_ID,
+        action: { label: "Try again", onClick: () => void runTranslation() },
+      });
     }
   }
 
@@ -139,8 +173,14 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
               aria-busy={loading}
               role="region"
             >
-              {translation === null ? (
-                <p className="text-lg text-muted/70">{loading ? "Translating…" : "Translation"}</p>
+              {loading ? (
+                <div className="space-y-3" aria-hidden>
+                  <div className="h-5 w-3/4 animate-pulse rounded bg-line" />
+                  <div className="h-5 w-1/2 animate-pulse rounded bg-line" />
+                  <div className="h-5 w-2/3 animate-pulse rounded bg-line" />
+                </div>
+              ) : translation === null ? (
+                <p className="text-lg text-muted/70">Translation</p>
               ) : (
                 <>
                   <p className="whitespace-pre-wrap text-lg leading-relaxed">{translation.text}</p>
@@ -175,12 +215,6 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
           />
         </div>
 
-        {failure !== null && (
-          <p role="alert" className="mt-4 text-sm text-danger">
-            {failure}
-          </p>
-        )}
-
         <div className="mt-6 flex items-center gap-3">
           <button
             type="button"
@@ -190,7 +224,11 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
           >
             {loading ? "Translating…" : "Update Translation"}
           </button>
-          <span className="text-xs text-muted">⌘/Ctrl + Enter</span>
+          <span className="text-xs text-muted" aria-live="polite">
+            {elapsed !== null && elapsed >= 2
+              ? `Asking Claude… ${elapsed}s`
+              : "⌘/Ctrl + Enter"}
+          </span>
         </div>
       </main>
     </div>

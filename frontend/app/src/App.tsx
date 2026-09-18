@@ -1,5 +1,6 @@
 import { ApolloProvider, useApolloClient, useQuery } from "@apollo/client/react";
 import { useCallback, useState } from "react";
+import { Toaster } from "sonner";
 import { AccessGate } from "./components/AccessGate.tsx";
 import { StatusScreen } from "./components/StatusScreen.tsx";
 import { ViewerDocument } from "./gql/graphql.ts";
@@ -36,6 +37,7 @@ export function App({ createClient = createApolloClient }: Props) {
   return (
     <ApolloProvider client={client}>
       <SessionBoundary key={epoch} sessionEnded={sessionEnded} onRestart={restart} />
+      <Toaster position="bottom-center" closeButton toastOptions={{ duration: 8000 }} />
     </ApolloProvider>
   );
 }

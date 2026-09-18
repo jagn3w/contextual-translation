@@ -114,4 +114,108 @@ describe("TranslatePage", () => {
     expect(await screen.findByLabelText("Access code")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Your session ended");
   });
+
+  it("shows a typed error as a toast without a retry when retrying won't help", async () => {
+    server.onGraphql("Translate", () =>
+      json({
+        data: {
+          translate: {
+            __typename: "TranslatePayload",
+            translation: null,
+            errors: [{ __typename: "TranslateError", code: "REFUSED", message: "x", retryable: false, retryAfterSeconds: null }],
+          },
+        },
+      }),
+    );
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    expect(await screen.findByText("Claude declined to translate this text.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+  });
+
+  it("offers a retry for retryable errors, and the retry can succeed", async () => {
+    let calls = 0;
+    server.onGraphql("Translate", () => {
+      calls += 1;
+      if (calls > 1) return translated("Hola", null);
+      return json({
+        data: {
+          translate: {
+            __typename: "TranslatePayload",
+            translation: null,
+            errors: [
+              { __typename: "TranslateError", code: "UPSTREAM_OVERLOADED", message: "x", retryable: true, retryAfterSeconds: null },
+            ],
+          },
+        },
+      });
+    });
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    expect(await screen.findByText("Claude is temporarily overloaded. Try again shortly.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Hola")).toBeInTheDocument();
+    expect(calls).toBe(2);
+  });
+
+  it("shows rate limits with the wait time", async () => {
+    server.onGraphql("Translate", () =>
+      json({
+        data: {
+          translate: {
+            __typename: "TranslatePayload",
+            translation: null,
+            errors: [{ __typename: "TranslateError", code: "RATE_LIMITED", message: "x", retryable: true, retryAfterSeconds: 30 }],
+          },
+        },
+      }),
+    );
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    expect(await screen.findByText("You're translating quickly — try again in 30 seconds.")).toBeInTheDocument();
+  });
+
+  it("shows non-GraphQL failures (rack-attack 429, INTERNAL) as toasts", async () => {
+    let calls = 0;
+    server.onGraphql("Translate", () => {
+      calls += 1;
+      if (calls === 1) return json({ error: "rate_limited", retryAfterSeconds: 20 }, 429);
+      return json({
+        data: null,
+        errors: [{ message: "Something unexpected went wrong.", extensions: { code: "INTERNAL", reference: "ab12cd34" } }],
+      });
+    });
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    expect(await screen.findByText("Too many attempts. Try again in 20 seconds.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    expect(await screen.findByText("Something unexpected went wrong (reference ab12cd34).")).toBeInTheDocument();
+  });
+
+  it("shows a loading state while translating", async () => {
+    let respond: (response: Response) => void = () => undefined;
+    server.onGraphql("Translate", () => new Promise<Response>((resolve) => (respond = resolve)));
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    expect(await screen.findByRole("button", { name: "Translating…" })).toBeDisabled();
+    expect(screen.getByRole("region", { name: "Translation result" })).toHaveAttribute("aria-busy", "true");
+    respond(translated("Hola", null));
+    expect(await screen.findByText("Hola")).toBeInTheDocument();
+  });
 });
