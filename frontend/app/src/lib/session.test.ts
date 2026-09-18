@@ -47,9 +47,17 @@ describe("signIn", () => {
 });
 
 describe("signOut", () => {
-  it("never throws", async () => {
-    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+  it("succeeds only when the server confirms", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
-    await expect(signOut()).resolves.toBeUndefined();
+    await expect(signOut()).resolves.toEqual({ ok: true });
+  });
+
+  it("reports network failures and rejected requests instead of pretending", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(signOut()).resolves.toEqual({ ok: false, reason: { kind: "network" } });
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: "forbidden_origin" }), { status: 403 }));
+    await expect(signOut()).resolves.toEqual({ ok: false, reason: { kind: "blocked" } });
   });
 });

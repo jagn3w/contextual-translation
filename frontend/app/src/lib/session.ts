@@ -25,10 +25,20 @@ export async function signIn(code: string): Promise<SignInResult> {
   return { ok: false, reason: failureFromResponse(response.status, bodyText, response.headers.get("retry-after")) };
 }
 
-export async function signOut(): Promise<void> {
+/**
+ * Asks the server to end the session. Only the server can clear the HttpOnly session cookie, so
+ * the sign-out has happened only when it says so (204); anything else leaves the user signed in.
+ */
+export async function signOut(): Promise<{ ok: true } | { ok: false; reason: RequestFailure }> {
+  let response: Response;
   try {
-    await fetch("/api/session", { method: "DELETE", headers: JSON_HEADERS, credentials: "same-origin" });
+    response = await fetch("/api/session", { method: "DELETE", headers: JSON_HEADERS, credentials: "same-origin" });
   } catch {
-    // Signing out is best-effort: the client forgets the session either way.
+    return { ok: false, reason: { kind: "network" } };
   }
+  if (response.ok) return { ok: true };
+  return {
+    ok: false,
+    reason: failureFromResponse(response.status, await response.text(), response.headers.get("retry-after")),
+  };
 }

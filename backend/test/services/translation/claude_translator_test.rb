@@ -187,6 +187,37 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     end
   end
 
+  test "every Claude call carries an explicit timeout (the beta endpoint otherwise uses 600 s)" do
+    client = Anthropic::Client.new(api_key: "k", max_retries: 0, timeout: 30)
+    seen = []
+    messages = client.beta.messages
+    original = messages.method(:create)
+    messages.define_singleton_method(:create) do |**params|
+      seen << params[:request_options]
+      original.call(**params)
+    end
+    stub_request(:post, MESSAGES_URL)
+      .to_return(error_response(500, "api_error"))
+      .then.to_return(message_response(translation: "Hola", notes: ""))
+
+    Translation::ClaudeTranslator.new(client:, sleeper: ->(_) { }).translate(@request)
+
+    assert_equal 2, seen.size
+    seen.each { |options| assert_operator options[:timeout], :<=, 30.0 }
+  end
+
+  test "warm_up starts the WIF token refresher" do
+    started = false
+    credentials = Object.new
+    credentials.define_singleton_method(:start) { started = true }
+    client = Anthropic::Client.new(api_key: "k")
+    client.define_singleton_method(:credentials) { credentials }
+
+    Translation::ClaudeTranslator.new(client:).warm_up
+
+    assert started
+  end
+
   private
 
   def assert_translation_error(code)

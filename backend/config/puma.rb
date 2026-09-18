@@ -39,3 +39,12 @@ plugin :tmp_restart
 # Specify the PID file. Defaults to tmp/pids/server.pid in development.
 # In other environments, only set the PID file if requested.
 pidfile ENV["PIDFILE"] if ENV["PIDFILE"]
+
+# Start background work that needs the booted app: the Claude WIF token refresher fetches a
+# token now and keeps it fresh, so translations never wait on it (design D5.2).
+after_booted do
+  if defined?(Rails) && Rails.env.production?
+    translator = Translation.translator
+    translator.warm_up if translator.respond_to?(:warm_up)
+  end
+end

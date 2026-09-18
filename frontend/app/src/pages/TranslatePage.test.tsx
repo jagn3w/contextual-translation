@@ -310,4 +310,35 @@ describe("TranslatePage", () => {
     await screen.findByLabelText("Access code");
     await waitFor(() => expect(screen.queryByText(/took too long/)).not.toBeInTheDocument());
   });
+
+  it("swap keeps text typed after translating, and the old result is marked out of date", async () => {
+    server.onGraphql("Translate", () => translated("Hola", null));
+    const user = await renderSignedIn();
+    const source = screen.getByLabelText("Text to translate");
+    await user.type(source, "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    await screen.findByText("Hola");
+
+    await user.clear(source);
+    await user.type(source, "A new paragraph I haven't translated");
+    expect(screen.getByRole("region", { name: "Translation result" })).toHaveClass("opacity-60");
+    await user.click(screen.getByRole("button", { name: "Swap languages" }));
+
+    expect(source).toHaveValue("A new paragraph I haven't translated");
+    expect(screen.getByRole("combobox", { name: "Source language" })).toHaveTextContent("Spanish");
+  });
+
+  it("editing the context marks the result out of date", async () => {
+    server.onGraphql("Translate", () => translated("Hola", null));
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    await screen.findByText("Hola");
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(result).not.toHaveClass("opacity-60");
+
+    await user.type(screen.getByLabelText("Context"), "At a baseball game");
+
+    expect(result).toHaveClass("opacity-60");
+  });
 });

@@ -55,17 +55,24 @@ module Claude
         workspace_id: env["ANTHROPIC_WORKSPACE_ID"].presence
       }
       # Created on first use: constructing an STS client resolves AWS credentials (instance
-      # metadata), which shouldn't happen — or stall — at boot.
+      # metadata), which shouldn't happen — or stall — at boot. Tight timeouts and one retry
+      # bound a slow STS; normally only the background refresher waits on it.
       sts_client = T.let(sts, T.nilable(Aws::STS::Client))
-      credentials = Anthropic::Credentials::WorkloadIdentity.new(
-        identity_token_provider: -> { identity_token(sts_client ||= Aws::STS::Client.new(region:)) },
+      workload_identity = Anthropic::Credentials::WorkloadIdentity.new(
+        identity_token_provider: -> { identity_token(sts_client ||= bounded_sts_client(region)) },
         **federation
       )
+      credentials = TokenRefresher.new(provider: workload_identity)
       # T.unsafe: the gem's bundled RBI predates the `credentials:` keyword (it exists at runtime).
       T.unsafe(Anthropic::Client).new(credentials:, max_retries: 0, timeout: TIMEOUT_SECONDS)
     end
 
-    # A fresh STS token each time the SDK needs one; the SDK caches the exchanged access token.
+    sig { params(region: String).returns(Aws::STS::Client) }
+    def self.bounded_sts_client(region)
+      Aws::STS::Client.new(region:, http_open_timeout: 2, http_read_timeout: 5, retry_limit: 1)
+    end
+
+    # A fresh STS token for each exchange; TokenRefresher caches the resulting access token.
     sig { params(sts: Aws::STS::Client).returns(String) }
     def self.identity_token(sts)
       sts.get_web_identity_token(

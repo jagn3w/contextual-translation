@@ -8,6 +8,10 @@
 # proxies — the default we rely on behind CapRover's nginx. Do not set
 # config.action_dispatch.trusted_proxies: rack-attack doesn't read it (D4.3).
 #
+# Paths: rack-attack canonicalizes PATH_INFO with the router's own normalizer before any rule
+# runs, so "/api/session/", "//api/session" and "/api//session" match the exact-path rules
+# below (verified in rack-attack 6.8; guarded by rack_attack_test.rb).
+#
 # Translation limits are NOT here: they are per session and per access code, enforced inside the
 # translate mutation so they can return a typed RATE_LIMITED error (D3.4).
 class Rack::Attack

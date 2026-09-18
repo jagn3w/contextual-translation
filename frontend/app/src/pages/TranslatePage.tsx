@@ -12,7 +12,11 @@ type Props = {
   onSignOut: () => void;
 };
 
-type Translation = NonNullable<TranslateMutation["translate"]["translation"]>;
+/** A translation plus the inputs it was made from, so the page can tell when it's out of date. */
+type Translation = NonNullable<TranslateMutation["translate"]["translation"]> & {
+  fromText: string;
+  fromContext: string;
+};
 
 const TOAST_ID = "translate-error";
 
@@ -59,9 +63,13 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   // A pending error toast (and its Try again) must not outlive the page, e.g. after sign-out.
   useEffect(() => () => void toast.dismiss(TOAST_ID), []);
 
+  const sourceEdited = translation !== null && translation.fromText !== sourceText;
   const stale =
     translation !== null &&
-    (translation.sourceLanguage !== sourceLanguage || translation.targetLanguage !== targetLanguage);
+    (sourceEdited ||
+      translation.fromContext !== context ||
+      translation.sourceLanguage !== sourceLanguage ||
+      translation.targetLanguage !== targetLanguage);
   const sourceTooLong = sourceText.length > MAX_SOURCE_LENGTH;
   const contextTooLong = context.length > MAX_CONTEXT_LENGTH;
   const canTranslate =
@@ -81,7 +89,8 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   // The translation carries its own languages, so the text keeps the right label even if the
   // pickers changed after translating.
   function swap() {
-    if (translation !== null) {
+    // Never overwrite text the user has typed since translating: swap only the languages.
+    if (translation !== null && !sourceEdited) {
       setSourceLanguage(translation.targetLanguage);
       setTargetLanguage(translation.sourceLanguage);
       setSourceText(translation.text);
@@ -106,7 +115,7 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
       const payload = data?.translate;
       const error = payload?.errors[0];
       if (payload?.translation) {
-        setTranslation(payload.translation);
+        setTranslation({ ...payload.translation, fromText: sourceText, fromContext: context });
       } else if (error !== undefined) {
         // Typed, anticipated failures (design D3.3): one message per code; retryable ones offer a retry.
         toast.error(translateErrorMessage(error.code, error.retryAfterSeconds ?? null), {

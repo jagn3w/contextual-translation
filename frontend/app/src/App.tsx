@@ -1,6 +1,6 @@
 import { ApolloProvider, useApolloClient, useQuery } from "@apollo/client/react";
 import { useCallback, useState } from "react";
-import { Toaster } from "sonner";
+import { Toaster, toast } from "sonner";
 import { AccessGate } from "./components/AccessGate.tsx";
 import { StatusScreen } from "./components/StatusScreen.tsx";
 import { ViewerDocument } from "./gql/graphql.ts";
@@ -53,7 +53,12 @@ function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
   const { data, error, loading, refetch } = useQuery(ViewerDocument, { fetchPolicy: "network-only" });
 
   const handleSignOut = useCallback(async () => {
-    await signOut();
+    const result = await signOut();
+    if (!result.ok) {
+      // The session cookie is still valid; staying put is the honest outcome.
+      toast.error(`Couldn't sign out. ${failureMessage(result.reason)}`);
+      return;
+    }
     await client.clearStore();
     onRestart(false);
   }, [client, onRestart]);

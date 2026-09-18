@@ -17,8 +17,11 @@ class Claude::ClientFactoryTest < ActiveSupport::TestCase
     assert_instance_of Anthropic::Client, Claude::ClientFactory.build({ "CLAUDE_AUTH" => "api_key", "ANTHROPIC_API_KEY" => "k" })
   end
 
-  test "wif mode builds a client from the federation ids" do
-    assert_instance_of Anthropic::Client, Claude::ClientFactory.build(WIF_ENV.to_h)
+  test "wif mode builds a client from the federation ids, with background token refresh" do
+    client = Claude::ClientFactory.build(WIF_ENV.to_h)
+
+    assert_instance_of Anthropic::Client, client
+    assert_instance_of Claude::TokenRefresher, client.credentials
   end
 
   test "wif mode refuses credentials that would silently override it" do

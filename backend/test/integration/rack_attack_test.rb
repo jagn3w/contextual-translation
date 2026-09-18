@@ -119,6 +119,44 @@ class RackAttackTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
+  # The router tolerates these spellings; rack-attack must count them as the same path.
+  [ "/api/session/", "//api/session", "/api//session" ].each do |variant|
+    test "#{variant} shares the canonical sign-in throttle" do
+      travel_to(Time.current.beginning_of_minute + 1.minute + 1.second)
+      5.times { post_json "/api/session", { code: BAD_CODE } }
+
+      post variant, params: { code: BAD_CODE }, headers: json_headers, as: :json
+
+      assert_response :too_many_requests
+    end
+  end
+
+  test "a trailing slash still signs in" do
+    _record, code = AccessCode.generate!(label: "x")
+
+    post "/api/session/", params: { code: }, headers: json_headers, as: :json
+
+    assert_response :no_content
+  end
+
+  test "/graphql/ shares the GraphQL cap" do
+    travel_to(Time.current.beginning_of_minute + 1.minute + 1.second)
+    sign_in
+    60.times { graphql("{ viewer { accessCodeLabel } }") }
+
+    post "/graphql/", params: { query: "{ viewer { accessCodeLabel } }" }, headers: json_headers, as: :json
+
+    assert_response :too_many_requests
+  end
+
+  test "percent-encoded and dot-segment spellings aren't routed at all" do
+    [ "/api/%73ession", "/api/./session", "/API/session" ].each do |variant|
+      post variant, params: { code: BAD_CODE }, headers: json_headers, as: :json
+
+      assert_response :not_found, variant
+    end
+  end
+
   test "health checks are never throttled" do
     100.times { get "/up" }
 

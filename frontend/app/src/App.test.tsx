@@ -91,4 +91,17 @@ describe("App session flow", () => {
 
     expect(await screen.findByText("Back online")).toBeInTheDocument();
   });
+
+  it("stays signed in, and says so, when signing out fails", async () => {
+    server.onGraphql("Viewer", () => viewer("Panel"));
+    server.onSession("DELETE", () => json({ error: "forbidden_origin" }, 403));
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByText(/Couldn't sign out/)).toBeInTheDocument();
+    expect(screen.getByText("Panel")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Access code")).not.toBeInTheDocument();
+  });
 });

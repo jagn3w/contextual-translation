@@ -40,6 +40,14 @@ module Translation
       @clock = clock
     end
 
+    # Starts background credential refresh (WIF) so the first translation doesn't wait on it.
+    # Called from Puma's after_booted hook in production.
+    sig { void }
+    def warm_up
+      credentials = T.let(T.unsafe(@client).credentials, T.untyped)
+      credentials.start if credentials.respond_to?(:start)
+    end
+
     sig { override.params(request: Request).returns(Result) }
     def translate(request)
       started = @clock.call
@@ -58,8 +66,10 @@ module Translation
 
     private
 
-    sig { params(request: Request, timeout: T.nilable(Float)).returns(Anthropic::Models::Beta::BetaMessage) }
-    def create_message(request, timeout: nil)
+    # Always pass an explicit timeout: with empty request options the beta endpoint ignores the
+    # client's 30 s and uses 600 s (anthropic 1.71, Beta::Messages#create).
+    sig { params(request: Request, timeout: Float).returns(Anthropic::Models::Beta::BetaMessage) }
+    def create_message(request, timeout:)
       @client.beta.messages.create(
         model: @model,
         max_tokens: MAX_TOKENS,
@@ -71,7 +81,7 @@ module Translation
         },
         fallbacks: :default,
         betas: [ FALLBACK_BETA ],
-        request_options: timeout ? { timeout: } : {}
+        request_options: { timeout: }
       )
     end
 
@@ -81,7 +91,7 @@ module Translation
     # retries are off.
     sig { params(request: Request, started: Float).returns(Anthropic::Models::Beta::BetaMessage) }
     def create_with_one_retry(request, started)
-      create_message(request)
+      create_message(request, timeout: [ DEADLINE_SECONDS, Claude::ClientFactory::TIMEOUT_SECONDS ].min)
     rescue Anthropic::Errors::RateLimitError, Anthropic::Errors::InternalServerError => e
       raise e if e.is_a?(Anthropic::Errors::RateLimitError) &&
         ClaudeErrorMapper.error_code(e) == ClaudeErrorMapper::TIER_SPEND_CAP_CODE
