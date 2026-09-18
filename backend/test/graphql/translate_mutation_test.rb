@@ -81,6 +81,13 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
     assert_not_includes body.to_json, "secret internals"
   end
 
+  test "validation failures come back as typed errors" do
+    body = graphql(MUTATION, variables: { input: INPUT.merge(sourceText: " ") })
+
+    assert_equal "EMPTY_INPUT", body.dig("data", "translate", "errors", 0, "code")
+    assert_equal false, body.dig("data", "translate", "errors", 0, "retryable")
+  end
+
   test "rejects unknown languages at the schema level" do
     body = graphql(MUTATION, variables: { input: INPUT.merge(targetLanguage: "FR") })
 
