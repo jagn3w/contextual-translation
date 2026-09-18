@@ -44,6 +44,16 @@ bin/rails graphql:dump_schema   # after any GraphQL change; commit schema.graphq
 After adding or upgrading gems, regenerate type information with `bin/tapioca gems` (and
 `bin/tapioca dsl` after model or route changes).
 
+## Frontend
+
+```sh
+cd frontend
+pnpm install
+pnpm dev                        # http://localhost:5173 — proxies /api and /graphql to Rails on :3000
+```
+
+Checks: `pnpm typecheck`, `pnpm test` (Vitest), `pnpm build`.
+
 ## License
 
 MIT — see `LICENSE`.

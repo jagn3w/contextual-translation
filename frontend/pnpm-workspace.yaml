@@ -1,0 +1,7 @@
+packages:
+  - app
+
+# Only these packages may run install scripts (supply-chain safety, as in the monorepo; D1.1).
+onlyBuiltDependencies:
+  - esbuild
+  - "@tailwindcss/oxide"
