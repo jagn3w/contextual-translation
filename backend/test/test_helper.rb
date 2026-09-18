@@ -8,6 +8,7 @@ require_relative "../config/environment"
 ENV.delete("ANTHROPIC_API_KEY")
 ENV.delete("ANTHROPIC_AUTH_TOKEN")
 require "rails/test_help"
+Dir[File.expand_path("support/**/*.rb", __dir__)].each { |file| require file }
 
 module ActiveSupport
   class TestCase
@@ -18,5 +19,11 @@ module ActiveSupport
     fixtures :all
 
     # Add more helper methods to be used by all tests here...
+  end
+end
+
+module ActionDispatch
+  class IntegrationTest
+    include SessionHelpers
   end
 end

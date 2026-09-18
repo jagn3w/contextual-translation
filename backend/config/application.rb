@@ -49,5 +49,25 @@ module ContextualTranslate
     # Middleware like session, flash, cookies can be added back manually.
     # Skip views, helpers and assets when generating a new resource.
     config.api_only = true
+
+    # Browser sessions: an encrypted, signed cookie (design D4.2). API mode drops the cookie and
+    # session middleware, so add them back.
+    config.session_store :cookie_store,
+      key: "_contextual_translate_session",
+      httponly: true,
+      same_site: :strict,
+      secure: Rails.env.production?, # dev and test run over plain HTTP
+      expire_after: 12.hours
+    config.middleware.use ActionDispatch::Cookies
+    config.middleware.use config.session_store, config.session_options
+
+    # The only Origin allowed to make state-changing requests (design D4.2). Tests use Rails'
+    # default integration host.
+    config.x.allowed_origin =
+      if Rails.env.test?
+        "http://www.example.com"
+      else
+        "#{Rails.env.production? ? "https" : "http"}://#{ENV.fetch("APP_HOST", "localhost:5173")}"
+      end
   end
 end

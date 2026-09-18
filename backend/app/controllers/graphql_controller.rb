@@ -8,18 +8,30 @@ class GraphqlController < ApplicationController
     render json: { errors: [ { message: error.message } ] }, status: :bad_request
   end
 
+  # Every operation requires a session (design D3.1). The body is GraphQL-shaped so clients
+  # handle it like any other top-level error (D3.3).
+  before_action :require_session
+
   sig { void }
   def execute
     result = ContextualTranslateSchema.execute(
       params[:query],
       variables: prepare_variables(params[:variables]),
-      context: {},
+      context: { current_session: current_session },
       operation_name: params[:operationName]
     )
     render json: result
   end
 
   private
+
+  sig { void }
+  def require_session
+    return if current_session
+
+    render json: { errors: [ { message: "Not signed in", extensions: { code: "UNAUTHENTICATED" } } ] },
+      status: :unauthorized
+  end
 
   # Variables arrive as a JSON object (application/json requests) or, rarely, a JSON string.
   # GraphQL-Ruby validates variable names and types against the schema; this only ensures the
