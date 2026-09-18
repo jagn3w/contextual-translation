@@ -84,10 +84,10 @@ class RackAttackTest < ActionDispatch::IntegrationTest
   test "the GraphQL endpoint is capped at 60 requests a minute per IP" do
     travel_to(Time.current.beginning_of_minute + 1.minute + 1.second)
     sign_in
-    60.times { graphql("{ ping }") }
+    60.times { graphql("{ viewer { accessCodeLabel } }") }
     assert_response :success
 
-    graphql("{ ping }")
+    graphql("{ viewer { accessCodeLabel } }")
 
     assert_response :too_many_requests
   end

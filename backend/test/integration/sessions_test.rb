@@ -14,7 +14,7 @@ class SessionsTest < ActionDispatch::IntegrationTest
     assert_match(/httponly/i, cookie)
     assert_match(/samesite=strict/i, cookie)
     assert_not_nil record.reload.last_used_at
-    graphql("{ ping }")
+    graphql("{ viewer { accessCodeLabel } }")
     assert_response :success
   end
 
@@ -23,7 +23,7 @@ class SessionsTest < ActionDispatch::IntegrationTest
 
     assert_response :unauthorized
     assert_equal "invalid_code", response.parsed_body["error"]
-    graphql("{ ping }")
+    graphql("{ viewer { accessCodeLabel } }")
     assert_response :unauthorized
   end
 
@@ -58,7 +58,7 @@ class SessionsTest < ActionDispatch::IntegrationTest
     record, = sign_in
 
     record.revoke!
-    graphql("{ ping }")
+    graphql("{ viewer { accessCodeLabel } }")
 
     assert_response :unauthorized
   end
@@ -67,7 +67,7 @@ class SessionsTest < ActionDispatch::IntegrationTest
     record, = sign_in
 
     record.update!(expires_at: 1.second.ago)
-    graphql("{ ping }")
+    graphql("{ viewer { accessCodeLabel } }")
 
     assert_response :unauthorized
   end
@@ -76,11 +76,11 @@ class SessionsTest < ActionDispatch::IntegrationTest
     sign_in
 
     travel 11.hours + 59.minutes do
-      graphql("{ ping }")
+      graphql("{ viewer { accessCodeLabel } }")
       assert_response :success
     end
     travel 12.hours + 1.minute do
-      graphql("{ ping }")
+      graphql("{ viewer { accessCodeLabel } }")
       assert_response :unauthorized
     end
   end
@@ -91,7 +91,7 @@ class SessionsTest < ActionDispatch::IntegrationTest
     delete_json "/api/session"
     assert_response :no_content
 
-    graphql("{ ping }")
+    graphql("{ viewer { accessCodeLabel } }")
     assert_response :unauthorized
   end
 

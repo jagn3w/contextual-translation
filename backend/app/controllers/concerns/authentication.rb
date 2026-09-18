@@ -18,6 +18,7 @@ module Authentication
   class Current < T::Struct
     const :access_code, AccessCode
     const :session_key, String
+    const :authenticated_at, ActiveSupport::TimeWithZone
   end
 
   private
@@ -32,10 +33,11 @@ module Authentication
   sig { params(access_code: AccessCode).void }
   def start_session(access_code)
     reset_session # new session id and contents: no session fixation
+    authenticated_at = Time.current
     session[:access_code_id] = access_code.id
-    session[:authenticated_at] = Time.current.to_i
+    session[:authenticated_at] = authenticated_at.to_i
     session[:session_key] = SecureRandom.hex(16)
-    @current_session = Current.new(access_code:, session_key: session[:session_key])
+    @current_session = Current.new(access_code:, session_key: session[:session_key], authenticated_at:)
   end
 
   sig { void }
@@ -52,7 +54,8 @@ module Authentication
     return nil unless access_code_id.is_a?(Integer) && authenticated_at.is_a?(Integer) && session_key.is_a?(String)
 
     # authenticated_at lives inside the encrypted cookie, so the client cannot extend it.
-    if Time.zone.at(authenticated_at) < SESSION_TTL.ago
+    signed_in_at = Time.zone.at(authenticated_at)
+    if signed_in_at < SESSION_TTL.ago
       reset_session
       return nil
     end
@@ -63,6 +66,6 @@ module Authentication
       return nil
     end
 
-    Current.new(access_code:, session_key:)
+    Current.new(access_code:, session_key:, authenticated_at: signed_in_at)
   end
 end
