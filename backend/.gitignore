@@ -18,8 +18,8 @@
 !/tmp/pids/
 !/tmp/pids/.keep
 
-# Built SPA copied in by the Docker build (design D1.6).
-/public/index.html
+# Built SPA copied in by the Docker build (design D1.6): index.html to spa/, assets to public/.
+/spa/
 /public/assets/
 
 # Secrets are env vars, never Rails credentials.

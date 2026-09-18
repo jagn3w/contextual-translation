@@ -10,6 +10,7 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up" => "rails/health#show", as: :rails_health_check
 
-  # Defines the root path route ("/")
-  # root "posts#index"
+  # Everything else is a client-side route of the single-page app (design D1.6).
+  root "spa#show"
+  get "*path", to: "spa#show", constraints: ->(request) { request.format.html? }
 end

@@ -74,6 +74,15 @@ pnpm dev                        # http://localhost:5173 — proxies /api and /gr
 
 Checks: `pnpm typecheck`, `pnpm test` (Vitest), `pnpm build`.
 
+## Production
+
+One Docker image runs Rails, which also serves the built SPA: `spa/index.html` for every
+client-side route (no-cache, strict CSP) and Vite's hashed assets from `public/` (cached forever).
+The entrypoint runs `db:prepare` before Puma. Required env: `SECRET_KEY_BASE`, `DATABASE_URL`,
+`ACCESS_CODE_PEPPER`, `APP_HOST`, `TRANSLATOR=claude` plus the Claude auth settings (see
+`backend/.env.example`). Puma runs 8 threads by default (`RAILS_MAX_THREADS`) because a
+translation holds its thread for the whole Claude call.
+
 ## License
 
 MIT — see `LICENSE`.

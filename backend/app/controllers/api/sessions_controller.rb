@@ -16,8 +16,9 @@ module Api
         start_session(access_code)
         head :no_content
       else
-        Rails.logger.info("Failed access-code sign-in from #{request.ip}")
-        LoginBan.record_failure(request.ip)
+        ip = request.ip.to_s # Rack's view of the client; empty only without REMOTE_ADDR
+        Rails.logger.info("Failed access-code sign-in from #{ip}")
+        LoginBan.record_failure(ip)
         render json: { error: "invalid_code" }, status: :unauthorized
       end
     end

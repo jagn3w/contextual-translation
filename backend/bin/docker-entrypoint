@@ -1,0 +1,16 @@
+#!/bin/bash -e
+# Container entrypoint (design D5.3): prepare the database (create + migrate) before starting
+# the server, as the monorepo does. Other commands (rake tasks from the CapRover console) run
+# as given.
+
+# jemalloc lowers Ruby's memory use on small instances when the image provides it.
+if [ -z "${LD_PRELOAD+x}" ]; then
+  LD_PRELOAD=$(find /usr/lib -name libjemalloc.so.2 -print -quit 2>/dev/null || true)
+  export LD_PRELOAD
+fi
+
+if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
+  ./bin/rails db:prepare
+fi
+
+exec "${@}"
