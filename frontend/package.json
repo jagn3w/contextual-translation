@@ -9,6 +9,7 @@
     "dev": "pnpm --filter app dev",
     "build": "pnpm --filter app build",
     "test": "pnpm --filter app test",
-    "typecheck": "pnpm --filter app typecheck"
+    "typecheck": "pnpm --filter app typecheck",
+    "codegen": "pnpm --filter app codegen"
   }
 }

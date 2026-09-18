@@ -1,0 +1,16 @@
+mutation Translate($input: TranslateInput!) {
+  translate(input: $input) {
+    translation {
+      text
+      notes
+      sourceLanguage
+      targetLanguage
+    }
+    errors {
+      code
+      message
+      retryable
+      retryAfterSeconds
+    }
+  }
+}

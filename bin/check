@@ -54,6 +54,13 @@ check_frontend() {
   cd "$ROOT/frontend"
   step "Frontend: install"
   pnpm install --frozen-lockfile
+  step "Frontend: GraphQL codegen is up to date with backend/schema.graphql"
+  pnpm codegen >/dev/null
+  if [[ -n "$(git status --porcelain -- app/src/gql)" ]]; then
+    git status --short -- app/src/gql
+    echo "frontend/app/src/gql is stale: run 'pnpm codegen' in frontend/ and commit the result" >&2
+    exit 1
+  fi
   step "Frontend: typecheck"
   pnpm typecheck
   step "Frontend: tests"

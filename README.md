@@ -101,6 +101,10 @@ pnpm dev                        # http://localhost:5173 — proxies /api and /gr
 
 Checks: `pnpm typecheck`, `pnpm test` (Vitest), `pnpm build`.
 
+GraphQL operations live in `frontend/app/src/graphql/*.graphql`. After changing one — or after the
+backend's `schema.graphql` changes — run `pnpm codegen` and commit `frontend/app/src/gql/`; the
+generated `TypedDocumentNode`s give every query and mutation checked types end to end.
+
 ## Production
 
 One Docker image runs Rails, which also serves the built SPA: `spa/index.html` for every
