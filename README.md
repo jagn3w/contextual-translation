@@ -26,7 +26,7 @@ of them; elsewhere, `mise install`.
 cd backend
 bundle install
 cp .env.example .env            # defaults use the fake translator; no API key needed
-export PGHOST=127.0.0.1         # dev container: Postgres listens on TCP only
+# .env sets PGHOST=127.0.0.1 (the dev container's Postgres listens on TCP only)
 bin/rails db:prepare
 bin/rails server                # http://localhost:3000
 ```

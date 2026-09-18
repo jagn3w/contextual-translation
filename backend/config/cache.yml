@@ -12,6 +12,6 @@ test:
   <<: *default
 
 production:
-  # Shares the primary database (design D5.3); the solid_cache_entries table is created by a
-  # regular migration in the primary schema.
+  # Shares the primary database (design D5.3); the solid_cache_entries table comes from the
+  # CreateSolidCacheEntries migration in the primary schema.
   <<: *default
