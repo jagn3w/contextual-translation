@@ -10,9 +10,20 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_18_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_18_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "access_codes", force: :cascade do |t|
+    t.string "code_digest", null: false
+    t.datetime "created_at", null: false
+    t.datetime "expires_at"
+    t.string "label", null: false
+    t.datetime "last_used_at"
+    t.datetime "revoked_at"
+    t.datetime "updated_at", null: false
+    t.index ["code_digest"], name: "index_access_codes_on_code_digest", unique: true
+  end
 
   create_table "solid_cache_entries", force: :cascade do |t|
     t.integer "byte_size", null: false
