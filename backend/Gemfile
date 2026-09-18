@@ -47,6 +47,9 @@ group :development, :test do
   gem "tapioca", "~> 0.20.0", require: false
 end
 
+# Request throttling and login bans (design D4.3)
+gem "rack-attack", "~> 6.7"
+
 # GraphQL API; schema dumped to schema.graphql for client codegen (design D1.2)
 gem "graphql", "~> 2.5"
 

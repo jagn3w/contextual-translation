@@ -16,7 +16,8 @@ module Api
         start_session(access_code)
         head :no_content
       else
-        Rails.logger.info("Failed access-code login from #{request.remote_ip}")
+        Rails.logger.info("Failed access-code sign-in from #{request.ip}")
+        LoginBan.record_failure(request.ip)
         render json: { error: "invalid_code" }, status: :unauthorized
       end
     end
