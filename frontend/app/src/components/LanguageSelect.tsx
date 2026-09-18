@@ -1,0 +1,46 @@
+import * as Select from "@radix-ui/react-select";
+import type { Language } from "../gql/graphql.ts";
+import { LANGUAGES, languageName } from "../lib/languages.ts";
+
+type Props = {
+  label: string;
+  value: Language;
+  onChange: (language: Language) => void;
+};
+
+/** A quiet, keyboard-accessible language picker (Radix Select, design D1.4). */
+export function LanguageSelect({ label, value, onChange }: Props) {
+  return (
+    <Select.Root value={value} onValueChange={(next) => onChange(next as Language)}>
+      <Select.Trigger
+        aria-label={label}
+        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-ink hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+      >
+        <Select.Value>{languageName(value)}</Select.Value>
+        <Select.Icon className="text-muted" aria-hidden>
+          ▾
+        </Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content
+          position="popper"
+          sideOffset={4}
+          className="z-50 min-w-40 overflow-hidden rounded-lg border border-line bg-canvas p-1 shadow-lg"
+        >
+          <Select.Viewport>
+            {LANGUAGES.map((language) => (
+              <Select.Item
+                key={language.code}
+                value={language.code}
+                className="flex cursor-default select-none items-center justify-between gap-4 rounded-md px-2 py-1.5 text-sm text-ink outline-none data-[highlighted]:bg-surface data-[state=checked]:font-medium"
+              >
+                <Select.ItemText>{language.name}</Select.ItemText>
+                <span className="text-xs text-muted">{language.nativeName}</span>
+              </Select.Item>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  );
+}

@@ -1,12 +1,86 @@
-import type { ViewerQuery } from "../gql/graphql.ts";
+import { useMutation } from "@apollo/client/react";
+import { type KeyboardEvent, useId, useState } from "react";
+import { LanguageSelect } from "../components/LanguageSelect.tsx";
+import { type Language, TranslateDocument, type TranslateMutation, type ViewerQuery } from "../gql/graphql.ts";
 
 type Props = {
   viewer: ViewerQuery["viewer"];
   onSignOut: () => void;
 };
 
-/** The signed-in app. The translation workspace arrives with the translate-page task. */
+type Translation = NonNullable<TranslateMutation["translate"]["translation"]>;
+
+export const MAX_SOURCE_LENGTH = 10_000;
+export const MAX_CONTEXT_LENGTH = 2_000;
+
+/**
+ * The translation workspace (design MVP, D1.4): the source pane (editable) and target pane
+ * (read-only) side by side like Google Translate, each with a language picker and a swap button
+ * between them; the context field and the Update Translation button below.
+ */
 export function TranslatePage({ viewer, onSignOut }: Props) {
+  const sourceId = useId();
+  const contextId = useId();
+  const [sourceLanguage, setSourceLanguage] = useState<Language>("EN");
+  const [targetLanguage, setTargetLanguage] = useState<Language>("ES");
+  const [sourceText, setSourceText] = useState("");
+  const [context, setContext] = useState("");
+  const [translation, setTranslation] = useState<Translation | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [translate, { loading }] = useMutation(TranslateDocument);
+
+  const stale =
+    translation !== null &&
+    (translation.sourceLanguage !== sourceLanguage || translation.targetLanguage !== targetLanguage);
+  const canTranslate = !loading && sourceText.trim() !== "" && sourceLanguage !== targetLanguage;
+
+  function chooseSource(language: Language) {
+    if (language === targetLanguage) setTargetLanguage(sourceLanguage);
+    setSourceLanguage(language);
+  }
+
+  function chooseTarget(language: Language) {
+    if (language === sourceLanguage) setSourceLanguage(targetLanguage);
+    setTargetLanguage(language);
+  }
+
+  // Like Google Translate: swap the languages and move the translation into the source pane.
+  function swap() {
+    setSourceLanguage(targetLanguage);
+    setTargetLanguage(sourceLanguage);
+    if (translation !== null) {
+      setSourceText(translation.text);
+      setTranslation(null);
+    }
+  }
+
+  async function runTranslation() {
+    if (!canTranslate) return;
+    setFailure(null);
+    try {
+      const { data } = await translate({
+        variables: {
+          input: { sourceText, sourceLanguage, targetLanguage, context: context.trim() === "" ? null : context },
+        },
+      });
+      const payload = data?.translate;
+      if (payload?.translation) {
+        setTranslation(payload.translation);
+      } else if (payload && payload.errors.length > 0) {
+        setFailure(payload.errors.map((error) => error.message).join(" "));
+      }
+    } catch {
+      setFailure("The translation failed. Try again.");
+    }
+  }
+
+  function handleShortcut(event: KeyboardEvent) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void runTranslation();
+    }
+  }
+
   return (
     <div className="min-h-screen bg-canvas text-ink">
       <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
@@ -18,6 +92,107 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
           </button>
         </div>
       </header>
+
+      <main className="mx-auto max-w-6xl px-6 pb-16" onKeyDown={handleShortcut}>
+        <section className="overflow-hidden rounded-xl border border-line" aria-label="Translation">
+          <div className="grid grid-cols-1 border-b border-line md:grid-cols-[1fr_auto_1fr]">
+            <div className="flex items-center px-3 py-2">
+              <LanguageSelect label="Source language" value={sourceLanguage} onChange={chooseSource} />
+            </div>
+            <div className="flex items-center justify-center border-y border-line px-2 md:border-y-0">
+              <button
+                type="button"
+                onClick={swap}
+                aria-label="Swap languages"
+                title="Swap languages"
+                className="rounded-full p-2 text-muted hover:bg-surface hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+              >
+                ⇄
+              </button>
+            </div>
+            <div className="flex items-center px-3 py-2">
+              <LanguageSelect label="Target language" value={targetLanguage} onChange={chooseTarget} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-line">
+            <div className="relative">
+              <label htmlFor={sourceId} className="sr-only">
+                Text to translate
+              </label>
+              <textarea
+                id={sourceId}
+                value={sourceText}
+                onChange={(event) => setSourceText(event.target.value)}
+                maxLength={MAX_SOURCE_LENGTH}
+                placeholder="Type or paste text…"
+                className="block min-h-72 w-full resize-y bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60 focus:outline-none"
+              />
+              <p className="px-5 pb-3 text-right text-xs text-muted" aria-live="polite">
+                {sourceText.length.toLocaleString()} / {MAX_SOURCE_LENGTH.toLocaleString()}
+              </p>
+            </div>
+
+            <div
+              className={`min-h-72 border-t border-line bg-surface/60 px-5 py-4 md:border-t-0 ${stale ? "opacity-60" : ""}`}
+              aria-label="Translation result"
+              aria-busy={loading}
+              role="region"
+            >
+              {translation === null ? (
+                <p className="text-lg text-muted/70">{loading ? "Translating…" : "Translation"}</p>
+              ) : (
+                <>
+                  <p className="whitespace-pre-wrap text-lg leading-relaxed">{translation.text}</p>
+                  {translation.notes && (
+                    <p className="mt-4 border-t border-line pt-3 text-sm text-muted">
+                      <span className="font-medium text-ink/80">Claude's note: </span>
+                      {translation.notes}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <div className="mt-6">
+          <label htmlFor={contextId} className="block text-sm font-medium">
+            Context
+          </label>
+          <p className="mt-0.5 text-sm text-muted">
+            Where are you, and who are you talking to? E.g. "At a baseball game" or "An email to my new manager in
+            Madrid".
+          </p>
+          <textarea
+            id={contextId}
+            value={context}
+            onChange={(event) => setContext(event.target.value)}
+            maxLength={MAX_CONTEXT_LENGTH}
+            rows={3}
+            placeholder="Describe the situation, formality or region…"
+            className="mt-2 block w-full resize-y rounded-lg border border-line bg-canvas px-4 py-3 text-sm leading-relaxed placeholder:text-muted/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
+          />
+        </div>
+
+        {failure !== null && (
+          <p role="alert" className="mt-4 text-sm text-danger">
+            {failure}
+          </p>
+        )}
+
+        <div className="mt-6 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void runTranslation()}
+            disabled={!canTranslate}
+            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {loading ? "Translating…" : "Update Translation"}
+          </button>
+          <span className="text-xs text-muted">⌘/Ctrl + Enter</span>
+        </div>
+      </main>
     </div>
   );
 }
