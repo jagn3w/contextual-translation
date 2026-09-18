@@ -168,6 +168,13 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     end
   end
 
+  test "TLS and HTTP protocol failures outside the SDK are UPSTREAM_UNREACHABLE" do
+    [ OpenSSL::SSL::SSLError.new("SSL_connect SYSCALL returned=5"), Net::ProtocolError.new("bad"),
+      Net::HTTPBadResponse.new("wrong status line") ].each do |raw|
+      assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, Translation::ClaudeErrorMapper.map(raw)&.code, raw.class.name
+    end
+  end
+
   test "unparseable output is UPSTREAM_ERROR and its text is never logged" do
     stub_request(:post, MESSAGES_URL).to_return(message_response(text: "not json: secret words"))
     log = StringIO.new

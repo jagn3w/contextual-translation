@@ -12,6 +12,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if (($#)); then TARGETS=("$@"); else TARGETS=(backend frontend); fi
+for target in "${TARGETS[@]}"; do
+  case "$target" in
+    backend | frontend) ;;
+    *) echo "bin/check: unknown target '$target' (expected backend and/or frontend)" >&2; exit 2 ;;
+  esac
+done
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
@@ -21,13 +27,20 @@ wants() {
   return 1
 }
 
+# A free TCP port, so the throwaway cluster never collides with a dev Postgres on 5432.
+free_port() {
+  ruby -rsocket -e 's = TCPServer.new("127.0.0.1", 0); puts s.addr[1]; s.close'
+}
+
 start_throwaway_postgres() {
   PG_DIR="$(mktemp -d)"
+  # Cleanup is armed before anything can fail, so a failed start leaves nothing behind.
+  trap 'pg_ctl -D "$PG_DIR" -m immediate stop >/dev/null 2>&1; rm -rf "$PG_DIR"' EXIT
+  PGPORT="$(free_port)"
   initdb -D "$PG_DIR" --auth=trust >/dev/null
   pg_ctl -D "$PG_DIR" -l "$PG_DIR/log" -w \
-    -o "-c listen_addresses=127.0.0.1 -c unix_socket_directories=''" start >/dev/null
-  trap 'pg_ctl -D "$PG_DIR" -m immediate stop >/dev/null 2>&1; rm -rf "$PG_DIR"' EXIT
-  export PGHOST=127.0.0.1
+    -o "-c listen_addresses=127.0.0.1 -c port=$PGPORT -c unix_socket_directories=''" start >/dev/null
+  export PGHOST=127.0.0.1 PGPORT
 }
 
 check_backend() {

@@ -15,6 +15,8 @@ export default defineConfig({
     proxy: {
       "/api": { target: RAILS_URL, changeOrigin: false },
       "/graphql": { target: RAILS_URL, changeOrigin: false },
+      // Rails' health check, so bin/smoke through Vite checks Rails rather than the SPA fallback.
+      "/up": { target: RAILS_URL, changeOrigin: false },
     },
   },
   build: {

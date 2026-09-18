@@ -48,6 +48,9 @@ module TranslationEval
         eval_case.failures(result.text)
       rescue Translation::Error => e
         [ "error #{e.code.serialize}: #{e.message}" ]
+      rescue StandardError => e
+        # An unmapped failure (e.g. a 400 after a prompt change) fails this case, not the run.
+        [ "unexpected #{e.class}: #{e.message.truncate(200)}" ]
       end
       seconds = Process.clock_gettime(Process::CLOCK_MONOTONIC).to_f - started
       report(eval_case, result, failures, seconds)

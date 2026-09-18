@@ -116,16 +116,21 @@ Dashboard → **Apps → One-Click Apps/Databases → PostgreSQL**:
 ### After the first release: check client IPs
 
 rack-attack throttles sign-in per client IP, so the app must see real addresses, not CapRover's
-internal ones (design D4.3). After you've made a request from your laptop:
+internal ones (design D4.3). Try one wrong code from your laptop, then:
 
 ```sh
-docker service logs srv-captain--contextual-translate 2>&1 | grep 'Started POST "/api/session"' | tail -3
+docker service logs srv-captain--contextual-translate 2>&1 | grep 'Failed access-code sign-in from' | tail -3
 ```
 
-The `for <ip>` must be **your public IP**. If it's a `10.x` / `172.x` address, traffic is arriving
-through Swarm's routing mesh and every visitor shares one throttle bucket — stop and fix that before
-sharing the demo (options: publish nginx's ports in host mode, or add a trusted-proxy rule for
-CapRover's nginx and re-test).
+The IP printed must be **your public IP**. If it's a `10.x` / `172.x` address, requests are reaching
+nginx through Docker Swarm's routing mesh, which rewrites the source address. Every visitor then
+shares one throttle bucket, so one bad code can ban the whole panel. Fix this before sharing the demo.
+
+- **Don't** try to fix it in Rails (`trusted_proxies` or similar). X-Forwarded-For already holds only
+  the mesh address by the time nginx sees the request, so no app setting can recover the client IP.
+- **Do** publish CapRover's nginx ports in **host mode**, so nginx sees the client's address directly.
+  **(verify)** the exact procedure for your CapRover version; it is an nginx-service change, not an
+  app change. Then repeat the check above.
 
 ## 8. Anthropic workspaces and spend limits
 

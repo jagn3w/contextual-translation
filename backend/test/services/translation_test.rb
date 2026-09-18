@@ -4,13 +4,13 @@ require "test_helper"
 
 class TranslationTest < ActiveSupport::TestCase
   test "builds the fake translator by default" do
-    assert_instance_of Translation::FakeTranslator, Translation.build_translator({})
+    assert_instance_of Translation::FakeTranslator, Translation.build_translator({}, production: false)
   end
 
   test "builds the Claude translator with the configured model and effort" do
     translator = Translation.build_translator(
-      "TRANSLATOR" => "claude", "CLAUDE_AUTH" => "api_key", "ANTHROPIC_API_KEY" => "k",
-      "CLAUDE_MODEL" => "claude-sonnet-5", "CLAUDE_EFFORT" => "low"
+      { "TRANSLATOR" => "claude", "CLAUDE_AUTH" => "api_key", "ANTHROPIC_API_KEY" => "k",
+        "CLAUDE_MODEL" => "claude-sonnet-5", "CLAUDE_EFFORT" => "low" }, production: false
     )
 
     assert_instance_of Translation::ClaudeTranslator, translator
@@ -19,6 +19,18 @@ class TranslationTest < ActiveSupport::TestCase
   end
 
   test "rejects an unknown translator" do
-    assert_raises(ArgumentError) { Translation.build_translator("TRANSLATOR" => "gpt") }
+    assert_raises(ArgumentError) { Translation.build_translator({ "TRANSLATOR" => "gpt" }, production: false) }
+  end
+
+  test "production requires TRANSLATOR=claude" do
+    [ {}, { "TRANSLATOR" => "fake" } ].each do |env|
+      error = assert_raises(ArgumentError) { Translation.build_translator(env, production: true) }
+      assert_includes error.message, "must be claude in production"
+    end
+
+    translator = Translation.build_translator(
+      { "TRANSLATOR" => "claude", "CLAUDE_AUTH" => "api_key", "ANTHROPIC_API_KEY" => "k" }, production: true
+    )
+    assert_instance_of Translation::ClaudeTranslator, translator
   end
 end

@@ -51,13 +51,16 @@ module Translation
     def check!(session)
       counters = SESSION_LIMITS.map { |limit| [ limit, "session:#{session.session_key}" ] } +
         CODE_LIMITS.map { |limit| [ limit, "code:#{session.access_code.id}" ] }
-      counters.each do |limit, subject|
+      # Count the attempt against every limit first, then report the first one exceeded.
+      exceeded = counters.filter_map do |limit, subject|
         window, retry_after = window_for(limit.period)
         count = increment("translate:#{limit.name}:#{subject}:#{window}", limit.period)
-        next if count <= limit.count
-
-        raise Error.new(ErrorCode::RATE_LIMITED, limit.message, retry_after_seconds: retry_after)
+        [ limit, retry_after ] if count > limit.count
       end
+      limit, retry_after = exceeded.first
+      return if limit.nil?
+
+      raise Error.new(ErrorCode::RATE_LIMITED, limit.message, retry_after_seconds: retry_after)
     end
 
     private

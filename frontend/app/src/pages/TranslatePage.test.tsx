@@ -165,14 +165,22 @@ describe("TranslatePage", () => {
     expect(calls).toBe(2);
   });
 
-  it("shows rate limits with the wait time", async () => {
+  it("shows our per-minute rate limit with the server's message and a retry", async () => {
     server.onGraphql("Translate", () =>
       json({
         data: {
           translate: {
             __typename: "TranslatePayload",
             translation: null,
-            errors: [{ __typename: "TranslateError", code: "RATE_LIMITED", message: "x", retryable: true, retryAfterSeconds: 30 }],
+            errors: [
+              {
+                __typename: "TranslateError",
+                code: "RATE_LIMITED",
+                message: "You're translating quickly — try again in a moment.",
+                retryable: true,
+                retryAfterSeconds: 30,
+              },
+            ],
           },
         },
       }),
@@ -182,7 +190,39 @@ describe("TranslatePage", () => {
     await user.type(screen.getByLabelText("Text to translate"), "Hello");
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
 
-    expect(await screen.findByText("You're translating quickly — try again in 30 seconds.")).toBeInTheDocument();
+    expect(await screen.findByText("You're translating quickly — try again in a moment.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("a daily cap says when it resets and offers no retry", async () => {
+    server.onGraphql("Translate", () =>
+      json({
+        data: {
+          translate: {
+            __typename: "TranslatePayload",
+            translation: null,
+            errors: [
+              {
+                __typename: "TranslateError",
+                code: "RATE_LIMITED",
+                message: "This device has reached today's translation limit.",
+                retryable: true,
+                retryAfterSeconds: 61_200,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    expect(
+      await screen.findByText("This device has reached today's translation limit. It resets in 17 hours."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
   });
 
   it("shows non-GraphQL failures (rack-attack 429, INTERNAL) as toasts", async () => {
@@ -340,5 +380,62 @@ describe("TranslatePage", () => {
     await user.type(screen.getByLabelText("Context"), "At a baseball game");
 
     expect(result).toHaveClass("opacity-60");
+  });
+
+  it("announces the result through an always-mounted live region", async () => {
+    server.onGraphql("Translate", () => translated("Hola", null));
+    const user = await renderSignedIn();
+    const status = screen.getByRole("status");
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    await screen.findByText("Hola");
+
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status).toHaveTextContent("Translation ready.");
+  });
+
+  it("drops a response that arrives after signing out", async () => {
+    let signedIn = true;
+    let respond: (response: Response) => void = () => undefined;
+    server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
+    server.onSession("DELETE", () => {
+      signedIn = false;
+      return new Response(null, { status: 204 });
+    });
+    server.onGraphql("Translate", () => new Promise<Response>((resolve) => (respond = resolve)));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Side project");
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByLabelText("Access code");
+    respond(
+      json({
+        data: {
+          translate: {
+            __typename: "TranslatePayload",
+            translation: null,
+            errors: [{ __typename: "TranslateError", code: "TIMEOUT", message: "x", retryable: true, retryAfterSeconds: null }],
+          },
+        },
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText(/took too long/)).not.toBeInTheDocument();
+  });
+
+  it("counts length in code points, like the backend", async () => {
+    const user = await renderSignedIn();
+    const source = screen.getByLabelText("Text to translate");
+
+    await user.click(source);
+    await user.paste("😀".repeat(10_000)); // 20,000 UTF-16 units, 10,000 code points
+
+    expect(screen.getByText("10,000 / 10,000")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update Translation" })).toBeEnabled();
   });
 });

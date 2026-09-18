@@ -18,7 +18,19 @@ type Translation = NonNullable<TranslateMutation["translate"]["translation"]> & 
   fromContext: string;
 };
 
-const TOAST_ID = "translate-error";
+// Each attempt gets its own toast id: sonner merges an update into an existing toast, so reusing
+// one id would let a retryable toast's "Try again" survive into a later, non-retryable error.
+let toastCounter = 0;
+
+/** Retrying is only offered when it could succeed soon; a daily cap shouldn't invite clicks. */
+const MAX_RETRY_BUTTON_WAIT_SECONDS = 60;
+
+/** Length in Unicode code points — how the backend (Ruby String#length) counts the limits. */
+export function codePointLength(text: string): number {
+  let count = 0;
+  for (const _ of text) count += 1;
+  return count;
+}
 
 /** Seconds since `active` became true, ticking once a second; null when inactive. */
 function useElapsedSeconds(active: boolean): number | null {
@@ -61,7 +73,18 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   const runLatest = useRef<() => Promise<void>>(async () => undefined);
 
   // A pending error toast (and its Try again) must not outlive the page, e.g. after sign-out.
-  useEffect(() => () => void toast.dismiss(TOAST_ID), []);
+  // A response that arrives after the page is gone (e.g. sign-out mid-request) is dropped.
+  const mounted = useRef(true);
+  const lastToastId = useRef<string | null>(null);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+      if (lastToastId.current !== null) toast.dismiss(lastToastId.current);
+    },
+    [],
+  );
+  // Screen-reader announcements: one always-mounted live region, updated per request.
+  const [announcement, setAnnouncement] = useState("");
 
   const sourceEdited = translation !== null && translation.fromText !== sourceText;
   const stale =
@@ -70,8 +93,10 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
       translation.fromContext !== context ||
       translation.sourceLanguage !== sourceLanguage ||
       translation.targetLanguage !== targetLanguage);
-  const sourceTooLong = sourceText.length > MAX_SOURCE_LENGTH;
-  const contextTooLong = context.length > MAX_CONTEXT_LENGTH;
+  const sourceLength = codePointLength(sourceText);
+  const contextLength = codePointLength(context);
+  const sourceTooLong = sourceLength > MAX_SOURCE_LENGTH;
+  const contextTooLong = contextLength > MAX_CONTEXT_LENGTH;
   const canTranslate =
     !loading && sourceText.trim() !== "" && sourceLanguage !== targetLanguage && !sourceTooLong && !contextTooLong;
 
@@ -104,7 +129,11 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   async function runTranslation() {
     if (!canTranslate || inFlight.current) return;
     inFlight.current = true;
-    toast.dismiss(TOAST_ID);
+    if (lastToastId.current !== null) toast.dismiss(lastToastId.current);
+    toastCounter += 1;
+    const toastId = `translate-error-${toastCounter}`;
+    lastToastId.current = toastId;
+    setAnnouncement("Translating…");
     const retry = { label: "Try again", onClick: () => void runLatest.current() };
     try {
       const { data } = await translate({
@@ -112,23 +141,29 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
           input: { sourceText, sourceLanguage, targetLanguage, context: context.trim() === "" ? null : context },
         },
       });
+      if (!mounted.current) return;
       const payload = data?.translate;
       const error = payload?.errors[0];
       if (payload?.translation) {
         setTranslation({ ...payload.translation, fromText: sourceText, fromContext: context });
+        setAnnouncement("Translation ready.");
       } else if (error !== undefined) {
-        // Typed, anticipated failures (design D3.3): one message per code; retryable ones offer a retry.
-        toast.error(translateErrorMessage(error.code, error.retryAfterSeconds ?? null), {
-          id: TOAST_ID,
-          ...(error.retryable ? { action: retry } : {}),
-        });
+        // Typed, anticipated failures (design D3.3): one message per code. Retry is offered only
+        // when it could work soon.
+        const retryAfter = error.retryAfterSeconds ?? null;
+        const offerRetry = error.retryable && (retryAfter ?? 0) <= MAX_RETRY_BUTTON_WAIT_SECONDS;
+        const message = translateErrorMessage(error.code, retryAfter, error.message);
+        setAnnouncement("Translation failed."); // the toast itself is announced by sonner
+        toast.error(message, { id: toastId, ...(offerRetry ? { action: retry } : {}) });
       }
     } catch (caught) {
+      if (!mounted.current) return;
       const failure = describeRequestError(caught);
       // An ended session is handled by the app, which returns to the access-code screen.
       if (failure.kind === "unauthenticated") return;
       const retryable = failure.kind === "network" || failure.kind === "server" || failure.kind === "internal";
-      toast.error(failureMessage(failure), { id: TOAST_ID, ...(retryable ? { action: retry } : {}) });
+      setAnnouncement("Translation failed.");
+      toast.error(failureMessage(failure), { id: toastId, ...(retryable ? { action: retry } : {}) });
     } finally {
       inFlight.current = false;
     }
@@ -192,7 +227,7 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
               />
               <p className={`px-5 pb-3 text-right text-xs ${sourceTooLong ? "text-danger" : "text-muted"}`}>
                 {sourceTooLong && "Too long to translate — "}
-                {sourceText.length.toLocaleString()} / {MAX_SOURCE_LENGTH.toLocaleString()}
+                {sourceLength.toLocaleString()} / {MAX_SOURCE_LENGTH.toLocaleString()}
               </p>
             </div>
 
@@ -212,9 +247,7 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
                 <p className="text-lg text-muted/70">Translation</p>
               ) : (
                 <>
-                  <p className="whitespace-pre-wrap text-lg leading-relaxed" aria-live="polite">
-                    {translation.text}
-                  </p>
+                  <p className="whitespace-pre-wrap text-lg leading-relaxed">{translation.text}</p>
                   {translation.notes && (
                     <p className="mt-4 border-t border-line pt-3 text-sm text-muted">
                       <span className="font-medium text-ink/80">Claude's note: </span>
@@ -246,7 +279,7 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
           />
           {contextTooLong && (
             <p className="mt-1 text-xs text-danger">
-              Context is too long — {context.length.toLocaleString()} / {MAX_CONTEXT_LENGTH.toLocaleString()} characters.
+              Context is too long — {contextLength.toLocaleString()} / {MAX_CONTEXT_LENGTH.toLocaleString()} characters.
             </p>
           )}
         </div>
@@ -263,9 +296,9 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
           <span className="text-xs text-muted">
             {elapsed !== null && elapsed >= 2 ? `Asking Claude… ${elapsed}s` : "⌘/Ctrl + Enter"}
           </span>
-          {/* One announcement per request for screen readers, not a per-second countdown. */}
-          <span className="sr-only" role="status">
-            {loading ? "Translating…" : ""}
+          {/* Always mounted, so screen readers announce each change: start, result or failure. */}
+          <span className="sr-only" role="status" aria-live="polite">
+            {announcement}
           </span>
         </div>
       </main>

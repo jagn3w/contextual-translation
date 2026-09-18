@@ -15,6 +15,8 @@ namespace :claude do
 
     print "#{auth == 'wif' ? '2/3' : '1/2'} Build translator... "
     translator = Translation.build_translator
+    abort "FAILED\nTRANSLATOR=#{ENV.fetch('TRANSLATOR', 'fake')}: this check needs TRANSLATOR=claude" \
+      unless translator.is_a?(Translation::ClaudeTranslator)
     puts "ok (#{translator.class.name})"
 
     print "#{auth == 'wif' ? '3/3' : '2/2'} Translate \"Is this a bat?\" at a baseball game... "

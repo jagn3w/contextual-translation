@@ -41,7 +41,8 @@ jobs:
         run: bin/check backend
       - name: Gem audit
         working-directory: backend
-        run: bin/bundler-audit --update
+        # `check` explicitly: without it the binstub skips config/bundler-audit.yml's ignore list.
+        run: bin/bundler-audit check --update
 
   frontend:
     runs-on: ubuntu-24.04

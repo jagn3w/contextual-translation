@@ -35,6 +35,21 @@ class TranslationEvalTest < ActiveSupport::TestCase
     assert_match(%r{-- passed \d/3  p50 \d+\.\ds  p95 \d+\.\ds}, io.string)
   end
 
+  test "an unexpected error fails its case instead of aborting the run" do
+    cases = TranslationEval::EvalCase.load_file(CASES_PATH).first(2)
+    broken = Class.new do
+      include Translation::Translator
+      define_method(:translate) { |_request| raise ArgumentError, "400 from a bad prompt" }
+    end
+    io = StringIO.new
+
+    outcomes = TranslationEval::Runner.new(translator: broken.new, cases:, io:).run(label: "broken")
+
+    assert_equal 2, outcomes.size
+    assert_includes outcomes.first.failures.first, "unexpected ArgumentError"
+    assert_match(%r{-- passed 0/2}, io.string)
+  end
+
   test "percentile picks the nearest rank" do
     values = [ 1.0, 2.0, 3.0, 4.0, 10.0 ]
 

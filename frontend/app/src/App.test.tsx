@@ -73,7 +73,7 @@ describe("App session flow", () => {
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
 
     expect(await screen.findByLabelText("Access code")).toBeInTheDocument();
-    expect(screen.queryByRole("status", { name: /session ended/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
   });
 
   it("offers a retry when the server can't be reached", async () => {

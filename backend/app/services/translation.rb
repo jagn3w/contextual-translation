@@ -16,8 +16,14 @@ module Translation
     @translator = translator
   end
 
-  sig { params(env: T::Hash[String, String]).returns(Translator) }
-  def self.build_translator(env = ENV.to_h)
+  # In production TRANSLATOR must be set explicitly to claude: a missing or `fake` value would
+  # otherwise boot and serve placeholder translations while every check reported success.
+  sig { params(env: T::Hash[String, String], production: T::Boolean).returns(Translator) }
+  def self.build_translator(env = ENV.to_h, production: Rails.env.production?)
+    if production && env["TRANSLATOR"] != "claude"
+      raise ArgumentError, "TRANSLATOR must be claude in production (got #{env['TRANSLATOR'].inspect})"
+    end
+
     case (kind = env.fetch("TRANSLATOR", "fake"))
     when "fake"
       FakeTranslator.new

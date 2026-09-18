@@ -73,6 +73,20 @@ class Translation::ServiceTest < ActiveSupport::TestCase
     assert_includes error.message, "Too many translations"
   end
 
+  test "an attempt refused by one limit still counts against the others" do
+    travel_to(Time.current.beginning_of_minute + 1.minute + 1.second)
+    10.times { @service.call(request("Hi"), session: @session) }
+    assert_raises(Translation::Error) { @service.call(request("Hi"), session: @session) } # refused by session-minute
+    second = session_for(@access_code)
+    third = session_for(@access_code)
+    10.times { @service.call(request("Hi"), session: second) }
+    9.times { @service.call(request("Hi"), session: third) } # 30 counted on the code, incl. the refused one
+
+    error = assert_raises(Translation::Error) { @service.call(request("Hi"), session: third) }
+
+    assert_includes error.message, "Too many translations"
+  end
+
   test "invalid requests don't count against the limits" do
     travel_to(Time.current.beginning_of_minute + 1.minute + 1.second)
     20.times { assert_raises(Translation::Error) { @service.call(request(""), session: @session) } }

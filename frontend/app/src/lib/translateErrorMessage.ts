@@ -6,7 +6,11 @@ import { formatWait } from "./formatWait.ts";
  * The toast text for each typed translate error (design D3.3). Exhaustive: adding a code to the
  * GraphQL enum breaks the build until it has a message here.
  */
-export function translateErrorMessage(code: TranslateErrorCode, retryAfterSeconds: number | null): string {
+export function translateErrorMessage(
+  code: TranslateErrorCode,
+  retryAfterSeconds: number | null,
+  serverMessage: string,
+): string {
   const wait = retryAfterSeconds === null ? "in a moment" : formatWait(retryAfterSeconds);
   switch (code) {
     case "EMPTY_INPUT":
@@ -16,7 +20,10 @@ export function translateErrorMessage(code: TranslateErrorCode, retryAfterSecond
     case "SAME_LANGUAGE":
       return "The source and target languages are the same.";
     case "RATE_LIMITED":
-      return `You're translating quickly — try again ${wait}.`;
+      // The server names which limit it was (per minute, or today's cap for this device or code).
+      return retryAfterSeconds !== null && retryAfterSeconds > 60
+        ? `${serverMessage} It resets ${formatWait(retryAfterSeconds)}.`
+        : serverMessage;
     case "TIMEOUT":
       return "The translation took too long. Try again, or shorten the text.";
     case "UPSTREAM_RATE_LIMITED":
