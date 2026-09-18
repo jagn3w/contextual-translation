@@ -20,6 +20,13 @@ The design, decisions (D-numbers) and task list live in `design/` and are synced
 Ruby 3.4.10, Node 22, pnpm 10 (pinned in `mise.toml`), PostgreSQL 16. The dev container has all
 of them; elsewhere, `mise install`.
 
+## Checks
+
+`bin/check` runs every quality gate — RuboCop, Sorbet, Brakeman, Rails tests (including the
+`schema.graphql` drift check), TypeScript, Vitest and the production build. CI runs the same
+script, and it is the `jkb task land` gate. `bin/check backend` or `bin/check frontend` runs one
+half. Without `PGHOST`/`DATABASE_URL` it starts a throwaway Postgres cluster for the run.
+
 ## Backend
 
 ```sh

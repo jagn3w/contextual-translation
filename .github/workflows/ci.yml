@@ -1,0 +1,63 @@
+# Runs bin/check (the same gate developers and `jkb task land` run) plus the audits that need
+# network access to advisory databases (design D1.3).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # libpq reads these; database.yml configures only database names.
+      PGHOST: 127.0.0.1
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          working-directory: backend
+          bundler-cache: true
+      - name: bin/check backend
+        run: bin/check backend
+      - name: Gem audit
+        working-directory: backend
+        run: bin/bundler-audit --update
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: bin/check frontend
+        run: bin/check frontend
+      - name: pnpm audit (advisory, non-blocking)
+        working-directory: frontend
+        continue-on-error: true
+        run: pnpm audit --prod
