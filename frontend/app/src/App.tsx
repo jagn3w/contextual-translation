@@ -68,7 +68,8 @@ function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
         />
       );
     }
-    return <StatusScreen message={failureMessage(failure)} onRetry={() => void refetch()} />;
+    // A failed retry re-renders this screen via `error`; swallow the rejected promise itself.
+    return <StatusScreen message={failureMessage(failure)} onRetry={() => void refetch().catch(() => undefined)} />;
   }
   if (loading || data === undefined) return <StatusScreen message="Loading…" />;
 

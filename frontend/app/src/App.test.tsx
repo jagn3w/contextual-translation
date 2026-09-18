@@ -57,7 +57,7 @@ describe("App session flow", () => {
     await user.type(await screen.findByLabelText("Access code"), "ctx-X");
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Too many attempts. Try again in 10 minutes.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Too many sign-in attempts. Try again in 10 minutes.");
   });
 
   it("signs out back to the gate", async () => {

@@ -19,7 +19,8 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    sourcemap: true,
+    // No public source maps: they'd be served from public/ with year-long caching.
+    sourcemap: false,
   },
   test: {
     environment: "jsdom",

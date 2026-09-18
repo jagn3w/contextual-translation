@@ -30,6 +30,7 @@ describe("describeRequestError", () => {
 
   it("maps the Origin check and body-size limit", () => {
     expect(describeRequestError(serverError(403, { error: "forbidden_origin" }))).toEqual({ kind: "blocked" });
+    expect(describeRequestError(serverError(415, { error: "unsupported_media_type" }))).toEqual({ kind: "blocked" });
     expect(describeRequestError(serverError(413, { error: "payload_too_large" }))).toEqual({ kind: "payloadTooLarge" });
     expect(describeRequestError(serverError(502, "<html>Bad gateway</html>"))).toEqual({ kind: "server", status: 502 });
   });

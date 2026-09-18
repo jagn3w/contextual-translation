@@ -8,7 +8,8 @@
 #   IMAGE_REPO          required, e.g. ghcr.io/jagnew/contextual-translate (private package)
 #   CAPROVER_URL        default https://captain.cr.jagnew.io
 #   CAPROVER_APP        default contextual-translate
-#   CAPROVER_PASSWORD   optional; the caprover CLI prompts when unset
+#   CAPROVER_PASSWORD   optional; the caprover CLI reads it from the environment (never passed
+#                       as a flag, so it isn't echoed or visible in ps) and prompts when unset
 #   DRY_RUN=1           print the commands instead of running them
 #
 # Needs: docker with buildx (logged in to ghcr.io with a token that can write packages) and the
@@ -40,9 +41,7 @@ echo "Releasing $(git log -1 --format='%h %s') as $image"
 # The EC2 host is x86; this machine may be Apple Silicon.
 run docker buildx build --platform linux/amd64 --tag "$image" --push .
 
-deploy=(caprover deploy --caproverUrl "$caprover_url" --caproverApp "$caprover_app" --imageName "$image")
-[[ -n "${CAPROVER_PASSWORD:-}" ]] && deploy+=(--caproverPassword "$CAPROVER_PASSWORD")
-run "${deploy[@]}"
+run caprover deploy --caproverUrl "$caprover_url" --caproverApp "$caprover_app" --imageName "$image"
 
 echo
 echo "Released $image to $caprover_app. Next, from the CapRover app console:"

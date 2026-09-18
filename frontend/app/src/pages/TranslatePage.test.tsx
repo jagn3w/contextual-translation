@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../App.tsx";
 import { installFakeServer, json, unauthenticated, viewer, type FakeServer } from "../test/fakeServer.ts";
@@ -199,7 +199,7 @@ describe("TranslatePage", () => {
     await user.type(screen.getByLabelText("Text to translate"), "Hello");
 
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
-    expect(await screen.findByText("Too many attempts. Try again in 20 seconds.")).toBeInTheDocument();
+    expect(await screen.findByText("Too many requests. Try again in 20 seconds.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
     expect(await screen.findByText("Something unexpected went wrong (reference ab12cd34).")).toBeInTheDocument();
@@ -217,5 +217,97 @@ describe("TranslatePage", () => {
     expect(screen.getByRole("region", { name: "Translation result" })).toHaveAttribute("aria-busy", "true");
     respond(translated("Hola", null));
     expect(await screen.findByText("Hola")).toBeInTheDocument();
+  });
+
+  it("Try again sends the current inputs, not the ones from when the error happened", async () => {
+    let calls = 0;
+    server.onGraphql("Translate", () => {
+      calls += 1;
+      if (calls > 1) return translated("Adiós", null);
+      return json({
+        data: {
+          translate: {
+            __typename: "TranslatePayload",
+            translation: null,
+            errors: [{ __typename: "TranslateError", code: "UPSTREAM_ERROR", message: "x", retryable: true, retryAfterSeconds: null }],
+          },
+        },
+      });
+    });
+    const user = await renderSignedIn();
+    const source = screen.getByLabelText("Text to translate");
+
+    await user.type(source, "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    await screen.findByText("Claude had a problem. Try again.");
+    await user.clear(source);
+    await user.type(source, "Goodbye");
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Adiós")).toBeInTheDocument();
+    const last = server.requests.filter((r) => r.body["operationName"] === "Translate").at(-1);
+    expect((last?.body["variables"] as { input: { sourceText: string } }).input.sourceText).toBe("Goodbye");
+  });
+
+  it("swap labels a stale translation by the languages it was made in", async () => {
+    server.onGraphql("Translate", () => translated("Hola", null, "EN", "ES"));
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    await screen.findByText("Hola");
+
+    screen.getByRole("combobox", { name: "Target language" }).focus();
+    await user.keyboard("{ArrowDown}");
+    const japanese = await screen.findByRole("option", { name: /Japanese/ });
+    japanese.focus();
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Swap languages" }));
+
+    expect(screen.getByLabelText("Text to translate")).toHaveValue("Hola");
+    expect(screen.getByRole("combobox", { name: "Source language" })).toHaveTextContent("Spanish");
+    expect(screen.getByRole("combobox", { name: "Target language" })).toHaveTextContent("English");
+  });
+
+  it("blocks text over the limit with a visible reason instead of truncating it", async () => {
+    const user = await renderSignedIn();
+    const source = screen.getByLabelText("Text to translate");
+
+    await user.click(source);
+    await user.paste("a".repeat(10_001));
+
+    expect(source).toHaveValue("a".repeat(10_001));
+    expect(screen.getByText(/Too long to translate/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update Translation" })).toBeDisabled();
+  });
+
+  it("dismisses a pending error toast when signing out", async () => {
+    let signedIn = true;
+    server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
+    server.onSession("DELETE", () => {
+      signedIn = false;
+      return new Response(null, { status: 204 });
+    });
+    server.onGraphql("Translate", () =>
+      json({
+        data: {
+          translate: {
+            __typename: "TranslatePayload",
+            translation: null,
+            errors: [{ __typename: "TranslateError", code: "TIMEOUT", message: "x", retryable: true, retryAfterSeconds: null }],
+          },
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Side project");
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    await screen.findByText(/took too long/);
+
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+
+    await screen.findByLabelText("Access code");
+    await waitFor(() => expect(screen.queryByText(/took too long/)).not.toBeInTheDocument());
   });
 });

@@ -51,11 +51,21 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   const [translation, setTranslation] = useState<Translation | null>(null);
   const [translate, { loading }] = useMutation(TranslateDocument);
   const elapsed = useElapsedSeconds(loading);
+  // Guards against double submits between the click and the re-render that disables the button.
+  const inFlight = useRef(false);
+  // Toast actions call the latest runTranslation, never one captured with outdated inputs.
+  const runLatest = useRef<() => Promise<void>>(async () => undefined);
+
+  // A pending error toast (and its Try again) must not outlive the page, e.g. after sign-out.
+  useEffect(() => () => void toast.dismiss(TOAST_ID), []);
 
   const stale =
     translation !== null &&
     (translation.sourceLanguage !== sourceLanguage || translation.targetLanguage !== targetLanguage);
-  const canTranslate = !loading && sourceText.trim() !== "" && sourceLanguage !== targetLanguage;
+  const sourceTooLong = sourceText.length > MAX_SOURCE_LENGTH;
+  const contextTooLong = context.length > MAX_CONTEXT_LENGTH;
+  const canTranslate =
+    !loading && sourceText.trim() !== "" && sourceLanguage !== targetLanguage && !sourceTooLong && !contextTooLong;
 
   function chooseSource(language: Language) {
     if (language === targetLanguage) setTargetLanguage(sourceLanguage);
@@ -68,18 +78,25 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   }
 
   // Like Google Translate: swap the languages and move the translation into the source pane.
+  // The translation carries its own languages, so the text keeps the right label even if the
+  // pickers changed after translating.
   function swap() {
-    setSourceLanguage(targetLanguage);
-    setTargetLanguage(sourceLanguage);
     if (translation !== null) {
+      setSourceLanguage(translation.targetLanguage);
+      setTargetLanguage(translation.sourceLanguage);
       setSourceText(translation.text);
       setTranslation(null);
+    } else {
+      setSourceLanguage(targetLanguage);
+      setTargetLanguage(sourceLanguage);
     }
   }
 
   async function runTranslation() {
-    if (!canTranslate) return;
+    if (!canTranslate || inFlight.current) return;
+    inFlight.current = true;
     toast.dismiss(TOAST_ID);
+    const retry = { label: "Try again", onClick: () => void runLatest.current() };
     try {
       const { data } = await translate({
         variables: {
@@ -94,19 +111,20 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
         // Typed, anticipated failures (design D3.3): one message per code; retryable ones offer a retry.
         toast.error(translateErrorMessage(error.code, error.retryAfterSeconds ?? null), {
           id: TOAST_ID,
-          ...(error.retryable ? { action: { label: "Try again", onClick: () => void runTranslation() } } : {}),
+          ...(error.retryable ? { action: retry } : {}),
         });
       }
     } catch (caught) {
       const failure = describeRequestError(caught);
       // An ended session is handled by the app, which returns to the access-code screen.
       if (failure.kind === "unauthenticated") return;
-      toast.error(failureMessage(failure), {
-        id: TOAST_ID,
-        action: { label: "Try again", onClick: () => void runTranslation() },
-      });
+      const retryable = failure.kind === "network" || failure.kind === "server" || failure.kind === "internal";
+      toast.error(failureMessage(failure), { id: TOAST_ID, ...(retryable ? { action: retry } : {}) });
+    } finally {
+      inFlight.current = false;
     }
   }
+  runLatest.current = runTranslation;
 
   function handleShortcut(event: KeyboardEvent) {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -137,9 +155,10 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
               <button
                 type="button"
                 onClick={swap}
+                disabled={loading}
                 aria-label="Swap languages"
                 title="Swap languages"
-                className="rounded-full p-2 text-muted hover:bg-surface hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                className="rounded-full p-2 text-muted hover:bg-surface hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:opacity-40"
               >
                 ⇄
               </button>
@@ -158,11 +177,12 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
                 id={sourceId}
                 value={sourceText}
                 onChange={(event) => setSourceText(event.target.value)}
-                maxLength={MAX_SOURCE_LENGTH}
+                aria-invalid={sourceTooLong}
                 placeholder="Type or paste text…"
                 className="block min-h-72 w-full resize-y bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60 focus:outline-none"
               />
-              <p className="px-5 pb-3 text-right text-xs text-muted" aria-live="polite">
+              <p className={`px-5 pb-3 text-right text-xs ${sourceTooLong ? "text-danger" : "text-muted"}`}>
+                {sourceTooLong && "Too long to translate — "}
                 {sourceText.length.toLocaleString()} / {MAX_SOURCE_LENGTH.toLocaleString()}
               </p>
             </div>
@@ -183,7 +203,9 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
                 <p className="text-lg text-muted/70">Translation</p>
               ) : (
                 <>
-                  <p className="whitespace-pre-wrap text-lg leading-relaxed">{translation.text}</p>
+                  <p className="whitespace-pre-wrap text-lg leading-relaxed" aria-live="polite">
+                    {translation.text}
+                  </p>
                   {translation.notes && (
                     <p className="mt-4 border-t border-line pt-3 text-sm text-muted">
                       <span className="font-medium text-ink/80">Claude's note: </span>
@@ -208,11 +230,16 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
             id={contextId}
             value={context}
             onChange={(event) => setContext(event.target.value)}
-            maxLength={MAX_CONTEXT_LENGTH}
+            aria-invalid={contextTooLong}
             rows={3}
             placeholder="Describe the situation, formality or region…"
             className="mt-2 block w-full resize-y rounded-lg border border-line bg-canvas px-4 py-3 text-sm leading-relaxed placeholder:text-muted/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
           />
+          {contextTooLong && (
+            <p className="mt-1 text-xs text-danger">
+              Context is too long — {context.length.toLocaleString()} / {MAX_CONTEXT_LENGTH.toLocaleString()} characters.
+            </p>
+          )}
         </div>
 
         <div className="mt-6 flex items-center gap-3">
@@ -224,10 +251,12 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
           >
             {loading ? "Translating…" : "Update Translation"}
           </button>
-          <span className="text-xs text-muted" aria-live="polite">
-            {elapsed !== null && elapsed >= 2
-              ? `Asking Claude… ${elapsed}s`
-              : "⌘/Ctrl + Enter"}
+          <span className="text-xs text-muted">
+            {elapsed !== null && elapsed >= 2 ? `Asking Claude… ${elapsed}s` : "⌘/Ctrl + Enter"}
+          </span>
+          {/* One announcement per request for screen readers, not a per-second countdown. */}
+          <span className="sr-only" role="status">
+            {loading ? "Translating…" : ""}
           </span>
         </div>
       </main>

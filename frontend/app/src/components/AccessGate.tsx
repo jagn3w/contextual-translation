@@ -1,6 +1,7 @@
 import { type FormEvent, useId, useState } from "react";
 import { assertNever } from "../lib/assertNever.ts";
 import { failureMessage } from "../lib/failureMessage.ts";
+import { formatWait } from "../lib/formatWait.ts";
 import { signIn } from "../lib/session.ts";
 
 type Props = {
@@ -32,7 +33,11 @@ export function AccessGate({ notice, onSignedIn }: Props) {
     if (reason === "invalidCode") {
       setError("That code didn't work. Check it and try again.");
     } else if (typeof reason === "object") {
-      setError(failureMessage(reason));
+      setError(
+        reason.kind === "rateLimited" && reason.retryAfterSeconds !== null
+          ? `Too many sign-in attempts. Try again ${formatWait(reason.retryAfterSeconds)}.`
+          : failureMessage(reason),
+      );
     } else {
       assertNever(reason);
     }

@@ -9,8 +9,8 @@ export function failureMessage(failure: RequestFailure): string {
       return "Your session ended. Enter the access code again.";
     case "rateLimited":
       return failure.retryAfterSeconds === null
-        ? "Too many attempts. Wait a few minutes and try again."
-        : `Too many attempts. Try again ${formatWait(failure.retryAfterSeconds)}.`;
+        ? "Too many requests. Wait a few minutes and try again."
+        : `Too many requests. Try again ${formatWait(failure.retryAfterSeconds)}.`;
     case "blocked":
       return "The request was blocked. Reload the page and try again.";
     case "payloadTooLarge":

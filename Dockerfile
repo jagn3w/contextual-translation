@@ -9,7 +9,8 @@ ARG RUBY_VERSION=3.4.10
 ARG NODE_VERSION=22
 
 # --- Frontend: build the SPA ------------------------------------------------------------------
-FROM node:${NODE_VERSION}-slim AS frontend
+# Runs natively on the build machine (the output is platform-independent), not under emulation.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-slim AS frontend
 WORKDIR /frontend
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable

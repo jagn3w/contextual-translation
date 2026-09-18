@@ -2,8 +2,8 @@
 .git
 .jkb
 .scratch
-.claude
-.mcp.json
+**/.claude
+**/.mcp.json
 design
 **/node_modules
 frontend/app/dist

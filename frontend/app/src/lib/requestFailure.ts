@@ -36,7 +36,8 @@ export function failureFromResponse(status: number, bodyText: string, retryAfter
   switch (status) {
     case 401:
       return { kind: "unauthenticated" };
-    case 403:
+    case 403: // the Origin check
+    case 415: // not sent as JSON
       return { kind: "blocked" };
     case 413:
       return { kind: "payloadTooLarge" };
