@@ -1,0 +1,165 @@
+"""
+An ISO 8601-encoded datetime
+"""
+scalar ISO8601DateTime @specifiedBy(url: "https://tools.ietf.org/html/rfc3339")
+
+"""
+A supported language.
+"""
+enum Language {
+  """
+  English
+  """
+  EN
+
+  """
+  Spanish
+  """
+  ES
+
+  """
+  Japanese
+  """
+  JA
+}
+
+type Mutation {
+  translate(input: TranslateInput!): TranslatePayload!
+}
+
+type Query {
+  """
+  The signed-in session.
+  """
+  viewer: Viewer!
+}
+
+"""
+An anticipated translation failure (design D3.3).
+"""
+type TranslateError {
+  code: TranslateErrorCode!
+
+  """
+  Safe, user-facing English text.
+  """
+  message: String!
+
+  """
+  Seconds to wait before retrying, when known.
+  """
+  retryAfterSeconds: Int
+
+  """
+  Whether trying again may succeed.
+  """
+  retryable: Boolean!
+}
+
+"""
+Why a translation failed. Each code has its own user-facing message (design D3.3).
+"""
+enum TranslateErrorCode {
+  """
+  The demo's Claude usage budget is used up.
+  """
+  BUDGET_EXCEEDED
+
+  """
+  The source text is blank.
+  """
+  EMPTY_INPUT
+
+  """
+  The source text or context is over its length limit.
+  """
+  INPUT_TOO_LONG
+
+  """
+  The translation was too long to finish.
+  """
+  OUTPUT_TOO_LONG
+
+  """
+  This session or access code is translating too quickly.
+  """
+  RATE_LIMITED
+
+  """
+  Claude declined to translate the text.
+  """
+  REFUSED
+
+  """
+  The source and target languages are the same.
+  """
+  SAME_LANGUAGE
+
+  """
+  The server's Claude credentials or settings are wrong.
+  """
+  SERVICE_MISCONFIGURED
+
+  """
+  Claude took too long to respond.
+  """
+  TIMEOUT
+
+  """
+  Claude returned a server error.
+  """
+  UPSTREAM_ERROR
+
+  """
+  Claude is temporarily overloaded.
+  """
+  UPSTREAM_OVERLOADED
+
+  """
+  Claude is rate-limiting requests.
+  """
+  UPSTREAM_RATE_LIMITED
+
+  """
+  Claude could not be reached.
+  """
+  UPSTREAM_UNREACHABLE
+}
+
+input TranslateInput {
+  """
+  The situation: where you are, who is speaking to whom, the desired formality or region.
+  """
+  context: String
+  sourceLanguage: Language!
+  sourceText: String!
+  targetLanguage: Language!
+}
+
+type TranslatePayload {
+  errors: [TranslateError!]!
+
+  """
+  Null when errors is non-empty.
+  """
+  translation: Translation
+}
+
+type Translation {
+  """
+  Claude's note on the meaning, formality and regional variety it chose.
+  """
+  notes: String
+  sourceLanguage: Language!
+  targetLanguage: Language!
+  text: String!
+}
+
+"""
+The signed-in session.
+"""
+type Viewer {
+  accessCodeExpiresAt: ISO8601DateTime
+  accessCodeLabel: String!
+  sessionExpiresAt: ISO8601DateTime!
+}

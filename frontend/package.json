@@ -1,0 +1,15 @@
+{
+  "name": "contextual-translate-frontend",
+  "private": true,
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter app dev",
+    "build": "pnpm --filter app build",
+    "test": "pnpm --filter app test",
+    "typecheck": "pnpm --filter app typecheck",
+    "codegen": "pnpm --filter app codegen"
+  }
+}

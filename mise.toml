@@ -1,0 +1,5 @@
+# Toolchain pins (design D1.1). The dev container bakes these in; mise is for other machines.
+[tools]
+ruby = "3.4.10"
+node = "22"
+pnpm = "10.33.2"

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Runs every quality gate locally — the same checks CI runs (design D1.3). It is also the jkb
+# land gate for this repo (`jkb task gate bin/check`).
+#
+#   bin/check              backend + frontend
+#   bin/check backend      backend only
+#   bin/check frontend     frontend only
+#
+# Postgres: if neither PGHOST nor DATABASE_URL is set and `initdb` is on PATH, a throwaway
+# TCP-only cluster is started for the run and removed afterwards (the dev container recipe).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if (($#)); then TARGETS=("$@"); else TARGETS=(backend frontend); fi
+for target in "${TARGETS[@]}"; do
+  case "$target" in
+    backend | frontend) ;;
+    *) echo "bin/check: unknown target '$target' (expected backend and/or frontend)" >&2; exit 2 ;;
+  esac
+done
+
+step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+
+wants() {
+  local target
+  for target in "${TARGETS[@]}"; do [[ "$target" == "$1" ]] && return 0; done
+  return 1
+}
+
+# A free TCP port, so the throwaway cluster never collides with a dev Postgres on 5432.
+free_port() {
+  ruby -rsocket -e 's = TCPServer.new("127.0.0.1", 0); puts s.addr[1]; s.close'
+}
+
+start_throwaway_postgres() {
+  PG_DIR="$(mktemp -d)"
+  # Cleanup is armed before anything can fail, so a failed start leaves nothing behind.
+  trap 'pg_ctl -D "$PG_DIR" -m immediate stop >/dev/null 2>&1; rm -rf "$PG_DIR"' EXIT
+  PGPORT="$(free_port)"
+  initdb -D "$PG_DIR" --auth=trust >/dev/null
+  pg_ctl -D "$PG_DIR" -l "$PG_DIR/log" -w \
+    -o "-c listen_addresses=127.0.0.1 -c port=$PGPORT -c unix_socket_directories=''" start >/dev/null
+  export PGHOST=127.0.0.1 PGPORT
+}
+
+check_backend() {
+  cd "$ROOT/backend"
+  if [[ -z "${PGHOST:-}" && -z "${DATABASE_URL:-}" ]] && command -v initdb >/dev/null; then
+    step "Postgres: starting a throwaway cluster"
+    start_throwaway_postgres
+  fi
+
+  step "Backend: bundle"
+  bundle check >/dev/null || bundle install
+  step "Backend: RuboCop"
+  bin/rubocop
+  step "Backend: Sorbet"
+  bundle exec srb tc
+  step "Backend: Brakeman"
+  bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error
+  step "Backend: tests (includes the schema.graphql drift check)"
+  RAILS_ENV=test bin/rails db:prepare >/dev/null
+  bin/rails test
+}
+
+check_frontend() {
+  cd "$ROOT/frontend"
+  step "Frontend: install"
+  pnpm install --frozen-lockfile
+  step "Frontend: GraphQL codegen is up to date with backend/schema.graphql"
+  pnpm codegen >/dev/null
+  if [[ -n "$(git status --porcelain -- app/src/gql)" ]]; then
+    git status --short -- app/src/gql
+    echo "frontend/app/src/gql is stale: run 'pnpm codegen' in frontend/ and commit the result" >&2
+    exit 1
+  fi
+  step "Frontend: typecheck"
+  pnpm typecheck
+  step "Frontend: tests"
+  pnpm test
+  step "Frontend: build"
+  pnpm build
+}
+
+wants backend && (check_backend)
+wants frontend && (check_frontend)
+
+step "All checks passed"

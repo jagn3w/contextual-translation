@@ -1,0 +1,67 @@
+source "https://rubygems.org"
+
+# Bundle edge Rails instead: gem "rails", github: "rails/rails", branch: "main"
+gem "rails", "~> 8.1.3", ">= 8.1.3.1"
+# Use postgresql as the database for Active Record
+gem "pg", "~> 1.1"
+# Use the Puma web server [https://github.com/puma/puma]
+gem "puma", ">= 5.0"
+
+# json 3.x changed JSON.parse's options signature; ActiveSupport 8.1.3 still passes a positional
+# options hash, which breaks every JSON request body. Revisit when Rails supports json 3.
+gem "json", "~> 2.10"
+
+# Use Active Model has_secure_password [https://guides.rubyonrails.org/active_model_basics.html#securepassword]
+# gem "bcrypt", "~> 3.1.7"
+
+# Windows does not include zoneinfo files, so bundle the tzinfo-data gem
+gem "tzinfo-data", platforms: %i[ windows jruby ]
+
+# Database-backed Rails.cache (rate-limit counters, rack-attack)
+gem "solid_cache"
+
+# Reduces boot times through caching; required in config/boot.rb
+gem "bootsnap", require: false
+
+# Use Rack CORS for handling Cross-Origin Resource Sharing (CORS), making cross-origin Ajax possible
+# gem "rack-cors"
+
+group :development, :test do
+  # See https://guides.rubyonrails.org/debugging_rails_applications.html#debugging-with-the-debug-gem
+  gem "debug", platforms: %i[ mri windows ], require: "debug/prelude"
+
+  # Audits gems for known security defects (use config/bundler-audit.yml to ignore issues)
+  gem "bundler-audit", require: false
+
+  # Static analysis for security vulnerabilities [https://brakemanscanner.org/]
+  gem "brakeman", require: false
+
+  # Omakase Ruby styling [https://github.com/rails/rubocop-rails-omakase/]
+  gem "rubocop-rails-omakase", require: false
+
+  # Loads .env in development and test (see .env.example)
+  gem "dotenv"
+
+  # Static type checking and RBI generation
+  gem "sorbet", "~> 0.6.13506", require: false
+  gem "tapioca", "~> 0.20.0", require: false
+end
+
+# Claude Messages API client (design D2.1)
+gem "anthropic", "~> 1.71"
+# AWS STS identity tokens for Workload Identity Federation (design D5.2); aws-sdk-core bundles STS
+gem "aws-sdk-core", "~> 3.257"
+
+# Request throttling and login bans (design D4.3)
+gem "rack-attack", "~> 6.7"
+
+# GraphQL API; schema dumped to schema.graphql for client codegen (design D1.2)
+gem "graphql", "~> 2.5"
+
+# Runtime type checks for Sorbet sigs (typed: strict in app/**)
+gem "sorbet-runtime", "~> 0.6.13506"
+
+group :test do
+  # Stub HTTP so Claude client tests exercise the real SDK without the network
+  gem "webmock"
+end

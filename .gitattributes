@@ -1,0 +1,2 @@
+# Tapioca-generated Sorbet type stubs: GitHub collapses them in diffs and leaves them out of stats.
+backend/sorbet/rbi/** linguist-generated=true
