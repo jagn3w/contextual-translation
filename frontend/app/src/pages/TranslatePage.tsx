@@ -250,7 +250,7 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
                   <p className="whitespace-pre-wrap text-lg leading-relaxed">{translation.text}</p>
                   {translation.notes && (
                     <p className="mt-4 border-t border-line pt-3 text-sm text-muted">
-                      <span className="font-medium text-ink/80">Claude's note: </span>
+                      <span className="font-medium text-ink/80">Note: </span>
                       {translation.notes}
                     </p>
                   )}
