@@ -16,6 +16,11 @@ module Translation
     sig { params(error: StandardError).returns(T.nilable(Error)) }
     def self.map(error)
       case error
+      when Claude::TokenRefresher::TokenUnavailable
+        # Named for why no token could be had: a WIF misconfiguration, or an unreachable STS or
+        # token endpoint. With no fetch failure behind it, the fetch is just slow.
+        cause = error.cause
+        (map(cause) if cause.is_a?(StandardError)) || unreachable
       when Anthropic::Errors::APITimeoutError # before APIConnectionError: it's a subclass
         Error.new(ErrorCode::TIMEOUT, "The translation took too long.")
       when Anthropic::Errors::APIConnectionError
@@ -40,13 +45,17 @@ module Translation
         Error.new(ErrorCode::SERVICE_MISCONFIGURED, "The translation service isn't configured correctly.")
       when Anthropic::Errors::APIStatusError
         budget_exceeded if error.status == 402 || error.type.to_s == "billing_error"
-      when Claude::TokenRefresher::TokenUnavailable,
-           Seahorse::Client::NetworkingError, Timeout::Error, SocketError, SystemCallError, IOError,
+      when Seahorse::Client::NetworkingError, Timeout::Error, SocketError, SystemCallError, IOError,
            OpenSSL::SSL::SSLError, Net::ProtocolError, Net::HTTPBadResponse
-        # Raised outside the SDK's transport rescue: the WIF token exchange (Net::HTTP) and the
-        # STS call run while the SDK builds auth headers, so their network failures arrive raw.
-        Error.new(ErrorCode::UPSTREAM_UNREACHABLE, "Couldn't reach Claude.")
+        # Raised outside the SDK's transport: the WIF token refresher's STS call and token
+        # exchange (Net::HTTP). They arrive as the cause of a TokenUnavailable.
+        unreachable
       end
+    end
+
+    sig { returns(Error) }
+    def self.unreachable
+      Error.new(ErrorCode::UPSTREAM_UNREACHABLE, "Couldn't reach Claude.")
     end
 
     sig { returns(Error) }

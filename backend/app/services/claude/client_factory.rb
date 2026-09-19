@@ -56,7 +56,7 @@ module Claude
       }
       # Created on first use: constructing an STS client resolves AWS credentials (instance
       # metadata), which shouldn't happen — or stall — at boot. Tight timeouts and one retry
-      # bound a slow STS; normally only the background refresher waits on it.
+      # bound a slow STS; only the refresher's background thread waits on it.
       sts_client = T.let(sts, T.nilable(Aws::STS::Client))
       workload_identity = Anthropic::Credentials::WorkloadIdentity.new(
         identity_token_provider: -> { identity_token(sts_client ||= bounded_sts_client(region)) },

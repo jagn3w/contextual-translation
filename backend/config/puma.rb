@@ -41,7 +41,8 @@ plugin :tmp_restart
 pidfile ENV["PIDFILE"] if ENV["PIDFILE"]
 
 # Start background work that needs the booted app: the Claude WIF token refresher fetches a
-# token now and keeps it fresh, so translations never wait on it (design D5.2).
+# token now and keeps it fresh, so translations never wait on it (design D5.2). This assumes
+# single mode; with workers, each starts its refresher on its first translation instead.
 after_booted do
   if defined?(Rails) && Rails.env.production?
     translator = Translation.translator

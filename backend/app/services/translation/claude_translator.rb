@@ -91,50 +91,55 @@ module Translation
     # finish inside the overall deadline, and gets just the time that's left. The SDK's own
     # retries are off.
     #
-    # A 401 also gets that one retry when credentials are refreshable (WIF): the SDK would
-    # invalidate its cached token itself, but only on its own retries, which are off. So a
-    # revoked or rotated token is replaced now rather than when it nears expiry.
+    # A 401 also gets that one retry with WIF credentials: the token was revoked or rotated, so
+    # the refresher fetches a newer one (unless it already has) and the SDK's token cache is
+    # cleared only once that token is in hand. If the refresh fails, the cache is left alone and
+    # nothing is left pending for the next request.
     sig { params(request: Request, started: Float).returns(Anthropic::Models::Beta::BetaMessage) }
     def create_with_one_retry(request, started)
-      attempt(request, started, force_token: false)
-    rescue Anthropic::Errors::AuthenticationError => e
-      raise e unless refreshable_credentials?
+      generation = await_credentials(started)
+      begin
+        create_message(request, timeout: call_timeout(started))
+      rescue Anthropic::Errors::AuthenticationError => e
+        raise e if generation.nil? || remaining_seconds(started) < MIN_RETRY_SECONDS
 
-      remaining = remaining_seconds(started)
-      raise e if remaining < MIN_RETRY_SECONDS
+        @logger.warn("Claude 401 (request_id=#{e.request_id}); refreshing credentials and retrying once")
+        await_credentials(started, after: generation)
+        T.must(@client.token_cache).invalidate
+        create_message(request, timeout: call_timeout(started))
+      rescue Anthropic::Errors::RateLimitError, Anthropic::Errors::InternalServerError => e
+        raise e if e.is_a?(Anthropic::Errors::RateLimitError) &&
+          ClaudeErrorMapper.error_code(e) == ClaudeErrorMapper::TIER_SPEND_CAP_CODE
 
-      @logger.warn("Claude 401 (request_id=#{e.request_id}); refreshing credentials and retrying once")
-      T.must(@client.token_cache).invalidate
-      attempt(request, started, force_token: true)
-    rescue Anthropic::Errors::RateLimitError, Anthropic::Errors::InternalServerError => e
-      raise e if e.is_a?(Anthropic::Errors::RateLimitError) &&
-        ClaudeErrorMapper.error_code(e) == ClaudeErrorMapper::TIER_SPEND_CAP_CODE
+        delay = retry_delay(e)
+        raise e if remaining_seconds(started) - delay < MIN_RETRY_SECONDS
 
-      delay = retry_delay(e)
-      raise e if remaining_seconds(started) - delay < MIN_RETRY_SECONDS
-
-      @logger.warn("Claude #{e.status} (request_id=#{e.request_id}); retrying once")
-      @sleeper.call(delay)
-      attempt(request, started, force_token: false)
+        @logger.warn("Claude #{e.status} (request_id=#{e.request_id}); retrying once")
+        @sleeper.call(delay)
+        await_credentials(started)
+        create_message(request, timeout: call_timeout(started))
+      end
     end
 
-    # One Claude call whose credential wait and request timeout both fit the remaining deadline.
-    sig { params(request: Request, started: Float, force_token: T::Boolean).returns(Anthropic::Models::Beta::BetaMessage) }
-    def attempt(request, started, force_token:)
-      if refreshable_credentials?
-        credentials.ensure_fresh(timeout: remaining_seconds(started) - MIN_CALL_SECONDS, force: force_token)
-      end
-      create_message(request, timeout: [ remaining_seconds(started), Claude::ClientFactory::TIMEOUT_SECONDS ].min)
+    # With WIF credentials, waits for a usable token (keeping MIN_CALL_SECONDS of the deadline
+    # for the Claude call) and returns its generation; with `after`, for a newer token than that
+    # generation. Returns nil for API-key clients.
+    sig { params(started: Float, after: T.nilable(Integer)).returns(T.nilable(Integer)) }
+    def await_credentials(started, after: nil)
+      refresher = credentials
+      return nil unless refresher.is_a?(Claude::TokenRefresher)
+
+      refresher.await_token(timeout: remaining_seconds(started) - MIN_CALL_SECONDS, after:)
+    end
+
+    sig { params(started: Float).returns(Float) }
+    def call_timeout(started)
+      [ remaining_seconds(started), Claude::ClientFactory::TIMEOUT_SECONDS ].min
     end
 
     sig { params(started: Float).returns(Float) }
     def remaining_seconds(started)
       DEADLINE_SECONDS - (@clock.call - started)
-    end
-
-    sig { returns(T::Boolean) }
-    def refreshable_credentials?
-      !!(credentials.respond_to?(:ensure_fresh) && @client.token_cache)
     end
 
     sig { returns(T.untyped) }

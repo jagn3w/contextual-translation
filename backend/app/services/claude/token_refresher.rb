@@ -2,31 +2,32 @@
 # frozen_string_literal: true
 
 module Claude
-  # Keeps a Workload Identity Federation access token fresh in the background, so translations
-  # never wait on STS or the Anthropic token exchange (design D5.2).
+  # Keeps a Workload Identity Federation access token fresh on one background thread, so
+  # translations never fetch credentials themselves (design D5.2).
   #
-  # It's an `Anthropic::Client` credentials provider (`call(force_refresh:)` -> AccessToken)
-  # wrapping the gem's WorkloadIdentity provider:
-  # - `start` (called when Puma boots) runs a thread that fetches a token at once, then again at
-  #   half its lifetime, retrying failures with capped exponential backoff while the current
-  #   token is still valid.
-  # - `call` hands out the cached token. It only fetches synchronously when there is no usable
-  #   token (before the first background fetch, or after a long outage) or the SDK forces a
-  #   refresh after a 401 — the bounded fallback, not the normal path.
+  # Only the warmer thread calls the wrapped provider (STS plus the Anthropic token exchange,
+  # which can take tens of seconds and can't be interrupted). It fetches at once, then at half
+  # each token's lifetime, and early when a translation reports a 401. A failed fetch is retried
+  # with capped exponential backoff while the current token is served until it expires.
+  #
+  # Request threads get two entry points, neither of which fetches:
+  # - `call`, the Anthropic::Client credentials provider, returns the current token or raises
+  #   TokenUnavailable, and never waits. The SDK's TokenCache calls it untimed from request
+  #   threads, so it must be instant; that makes the cache a passthrough.
+  # - `await_token`, which ClaudeTranslator calls before each Claude request, waits a bounded
+  #   time for a usable token, or for a newer one after a 401.
   class TokenRefresher
     extend T::Sig
 
-    # A token with less than this left is treated as expired.
+    # A token with less than this left is treated as expired: a Claude call can take 30 s.
     MIN_VALIDITY_SECONDS = 60.0
-    # A forced refresh right after another *forced* fetch reuses it: after a 401 the translator
-    # forces a refresh, then the SDK's own token cache asks again with force_refresh. The first
-    # forced refresh always fetches, even if a routine fetch just happened.
-    FORCE_DEDUPE_SECONDS = 5.0
-
-    # No token arrived within the caller's time budget (the fetch keeps going in the background).
-    class TokenUnavailable < StandardError; end
     INITIAL_BACKOFF_SECONDS = 5.0
     MAX_BACKOFF_SECONDS = 60.0
+
+    # No usable token within the caller's time budget. The underlying fetch failure, if any, is
+    # the `cause`. An Anthropic error so that, raised from `call` inside the SDK's TokenCache
+    # advisory window, the cache falls back to its still-valid token instead of failing.
+    class TokenUnavailable < Anthropic::Errors::Error; end
 
     Clock = T.type_alias { T.proc.returns(Float) }
     Sleeper = T.type_alias { T.proc.params(seconds: Float).void }
@@ -44,47 +45,53 @@ module Claude
       @logger = logger
       @clock = clock
       @sleeper = sleeper
-      @state_lock = T.let(Mutex.new, Mutex)
-      @fetch_lock = T.let(Mutex.new, Mutex)
+      @lock = T.let(Mutex.new, Mutex)
+      # Signalled whenever the token, the backoff state or a refresh request changes.
+      @changed = T.let(ConditionVariable.new, ConditionVariable)
       @current = T.let(nil, T.nilable(Anthropic::Credentials::AccessToken))
       @fetched_at = T.let(0.0, Float)
-      @forced_at = T.let(nil, T.nilable(Float))
+      # Counts successful fetches; identifies which token a request used.
+      @generation = T.let(0, Integer)
+      # A request had a token of this generation (or older) rejected: fetch a newer one now.
+      @refresh_after = T.let(nil, T.nilable(Integer))
+      @backing_off = T.let(false, T::Boolean)
+      @last_error = T.let(nil, T.nilable(StandardError))
       @thread = T.let(nil, T.nilable(Thread))
-      @started = T.let(false, T::Boolean)
     end
 
-    # The Anthropic::Client credentials interface.
-    sig { params(force_refresh: T::Boolean).returns(Anthropic::Credentials::AccessToken) }
-    def call(force_refresh: false)
-      start if @started && !@thread&.alive? # revive a background thread that died
-      token = @state_lock.synchronize { @current }
-      return token if token && !force_refresh && usable?(token)
+    # The Anthropic::Client credentials interface. Never fetches and never waits.
+    sig { returns(Anthropic::Credentials::AccessToken) }
+    def call
+      @lock.synchronize do
+        token = @current
+        return token if token && usable?(token)
 
-      @logger.warn("Claude WIF token: no usable cached token; fetching synchronously")
-      fetch!(seen: token, force: force_refresh)
-    end
-
-    # A usable token within `timeout` seconds, or TokenUnavailable. The translator calls this
-    # before each Claude request so waiting for credentials counts against the request's
-    # deadline; the SDK's own call then finds the token already cached. A fetch that outlives
-    # the timeout finishes on its own thread and still refreshes the cache.
-    sig { params(timeout: Float, force: T::Boolean).returns(Anthropic::Credentials::AccessToken) }
-    def ensure_fresh(timeout:, force: false)
-      token = @state_lock.synchronize { @current }
-      return token if token && !force && usable?(token)
-      raise TokenUnavailable, "no time left to fetch a Claude access token" unless timeout.positive?
-
-      result = Thread::Queue.new
-      Thread.new do
-        result << fetch!(seen: token, force:)
-      rescue StandardError => e
-        result << e
+        raise_unavailable("no usable Claude access token")
       end
-      outcome = result.pop(timeout:)
-      raise TokenUnavailable, "timed out after #{timeout.round(1)}s fetching a Claude access token" if outcome.nil?
-      raise outcome if outcome.is_a?(StandardError)
+    end
 
-      T.cast(outcome, Anthropic::Credentials::AccessToken)
+    # Waits up to `timeout` seconds for a usable token and returns its generation. With `after`
+    # (the generation of a token Claude just rejected) it waits for a newer one, asking the
+    # warmer to fetch it now unless it already has. Fails at once while the warmer is backing
+    # off after a failed fetch: its next attempt may be a minute away, and Puma threads
+    # shouldn't be parked on it.
+    sig { params(timeout: Float, after: T.nilable(Integer)).returns(Integer) }
+    def await_token(timeout:, after: nil)
+      start
+      deadline = monotonic + timeout
+      @lock.synchronize do
+        request_refresh(after) if after
+        loop do
+          token = @current
+          return @generation if token && usable?(token) && (after.nil? || @generation > after)
+          raise_unavailable("the Claude access token fetch is failing; retrying in the background") if @backing_off
+
+          remaining = deadline - monotonic
+          raise_unavailable("timed out after #{timeout.round(1)}s waiting for a Claude access token") unless remaining.positive?
+
+          @changed.wait(@lock, remaining)
+        end
+      end
     end
 
     # The SDK binds its base URL into the provider; pass it through.
@@ -93,11 +100,11 @@ module Claude
       @provider.bind_base_url(base_url) if @provider.respond_to?(:bind_base_url)
     end
 
-    # Starts the background refresh thread (idempotent).
+    # Starts the warmer thread, or revives one that died (idempotent). Puma's after_booted hook
+    # calls it; `await_token` does too, for rake tasks and consoles.
     sig { void }
     def start
-      @state_lock.synchronize do
-        @started = true
+      @lock.synchronize do
         return if @thread&.alive?
 
         @thread = Thread.new { run }
@@ -105,44 +112,102 @@ module Claude
       end
     end
 
-    # Seconds until the next background refresh: now if there's no token, else at half its
-    # lifetime.
-    sig { returns(Float) }
-    def seconds_until_refresh
-      token, fetched_at = @state_lock.synchronize { [ @current, @fetched_at ] }
-      expires_at = token&.expires_at
-      return 0.0 if token.nil? || expires_at.nil?
-
-      refresh_at = fetched_at + ((expires_at.to_f - fetched_at) / 2)
-      [ refresh_at - @clock.call, 0.0 ].max
+    # Stops the warmer thread. For tests; process exit doesn't need it.
+    sig { void }
+    def stop
+      thread = @lock.synchronize do
+        running = @thread
+        @thread = nil
+        running
+      end
+      thread&.kill&.join(1)
     end
 
-    # One background refresh, retrying with capped exponential backoff until it succeeds.
-    sig { void }
-    def refresh_with_backoff
-      delay = INITIAL_BACKOFF_SECONDS
-      loop do
-        fetch!(seen: nil, force: true)
-        return
-      rescue StandardError => e
-        @logger.error("Claude WIF token refresh failed (#{e.class}: #{e.message.truncate(200)}); retrying in #{delay.round}s")
-        @sleeper.call(delay)
-        delay = [ delay * 2, MAX_BACKOFF_SECONDS ].min
-      end
+    # Seconds until the warmer should fetch: now if there's no usable token or a request
+    # reported the current one rejected, else at half its lifetime; nil if it never expires.
+    sig { returns(T.nilable(Float)) }
+    def seconds_until_refresh
+      @lock.synchronize { refresh_due_in }
     end
 
     private
 
     sig { void }
     def run
+      delay = INITIAL_BACKOFF_SECONDS
       loop do
-        wait = seconds_until_refresh
-        @sleeper.call(wait) if wait.positive?
-        refresh_with_backoff
+        wait_until_due
+        error = fetch
+        if error
+          @logger.error("Claude WIF token refresh failed (#{error.class}: #{error.message.truncate(200)}); retrying in #{delay.round}s")
+          @sleeper.call(delay)
+          delay = [ delay * 2, MAX_BACKOFF_SECONDS ].min
+        else
+          delay = INITIAL_BACKOFF_SECONDS
+        end
       end
     rescue StandardError => e
-      # Never expected (refresh_with_backoff rescues); `call` revives the thread if it happens.
+      # Never expected (fetch rescues); `await_token` revives the thread if it happens.
       @logger.error("Claude WIF token refresher stopped: #{e.class}: #{e.message}")
+    end
+
+    sig { void }
+    def wait_until_due
+      @lock.synchronize do
+        while (wait = refresh_due_in).nil? || wait.positive?
+          @changed.wait(@lock, wait)
+        end
+        # A fetch is starting: requests can wait for it again.
+        @backing_off = false
+      end
+    end
+
+    # Calls the provider outside the lock, since it can take tens of seconds. Returns the
+    # failure, if any.
+    sig { returns(T.nilable(StandardError)) }
+    def fetch
+      token = @provider.call
+      @lock.synchronize do
+        @current = token
+        @fetched_at = @clock.call
+        @generation += 1
+        @last_error = nil
+        @changed.broadcast
+      end
+      @logger.info("Claude WIF token refreshed; expires in #{(token.expires_at.to_f - @clock.call).round}s")
+      nil
+    rescue StandardError => e
+      @lock.synchronize do
+        @last_error = e
+        @backing_off = true
+        @changed.broadcast
+      end
+      e
+    end
+
+    # Callers hold the lock. A no-op once a newer token exists or the refresh was already asked for.
+    sig { params(after: Integer).void }
+    def request_refresh(after)
+      return if @generation > after || @refresh_after == after
+
+      @refresh_after = after
+      @changed.broadcast
+    end
+
+    # Callers hold the lock.
+    sig { returns(T.nilable(Float)) }
+    def refresh_due_in
+      token = @current
+      return 0.0 if token.nil? || !usable?(token)
+
+      requested = @refresh_after
+      return 0.0 if requested && @generation <= requested
+
+      expires_at = token.expires_at
+      return nil if expires_at.nil?
+
+      refresh_at = @fetched_at + ((expires_at.to_f - @fetched_at) / 2)
+      [ refresh_at - @clock.call, 0.0 ].max
     end
 
     sig { params(token: Anthropic::Credentials::AccessToken).returns(T::Boolean) }
@@ -151,28 +216,16 @@ module Claude
       expires_at.nil? || expires_at.to_f - @clock.call > MIN_VALIDITY_SECONDS
     end
 
-    # Single-flight: concurrent callers wait for one fetch. A caller that queued behind another
-    # fetch (the token changed from the one it `seen`) reuses that result instead of fetching
-    # again, unless it must `force` a new token.
-    sig do
-      params(seen: T.nilable(Anthropic::Credentials::AccessToken), force: T::Boolean)
-        .returns(Anthropic::Credentials::AccessToken)
+    # Callers hold the lock.
+    sig { params(message: String).returns(T.noreturn) }
+    def raise_unavailable(message)
+      # T.unsafe: Sorbet's Kernel#raise signature lacks the `cause:` keyword.
+      T.unsafe(Kernel).raise(TokenUnavailable, message, cause: @last_error)
     end
-    def fetch!(seen:, force:)
-      @fetch_lock.synchronize do
-        current, forced_at = @state_lock.synchronize { [ @current, @forced_at ] }
-        return current if !force && current && !current.equal?(seen) && usable?(current)
-        return current if force && current && forced_at && @clock.call - forced_at < FORCE_DEDUPE_SECONDS
 
-        token = @provider.call
-        @state_lock.synchronize do
-          @current = token
-          @fetched_at = @clock.call
-          @forced_at = @fetched_at if force
-        end
-        @logger.info("Claude WIF token refreshed; expires in #{(token.expires_at.to_f - @clock.call).round}s")
-        token
-      end
+    sig { returns(Float) }
+    def monotonic
+      Process.clock_gettime(Process::CLOCK_MONOTONIC).to_f
     end
   end
 end

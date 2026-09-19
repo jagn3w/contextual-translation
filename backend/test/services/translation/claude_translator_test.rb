@@ -168,6 +168,19 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     end
   end
 
+  test "an unavailable WIF token is mapped by why the fetch failed" do
+    unavailable = ->(cause) do
+      raise Claude::TokenRefresher::TokenUnavailable, "no token", cause:
+    rescue Claude::TokenRefresher::TokenUnavailable => e
+      Translation::ClaudeErrorMapper.map(e)&.code
+    end
+
+    assert_equal Translation::ErrorCode::SERVICE_MISCONFIGURED,
+      unavailable.call(Anthropic::Credentials::WorkloadIdentityError.new("invalid_grant"))
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, unavailable.call(Net::OpenTimeout.new)
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, unavailable.call(nil)
+  end
+
   test "TLS and HTTP protocol failures outside the SDK are UPSTREAM_UNREACHABLE" do
     [ OpenSSL::SSL::SSLError.new("SSL_connect SYSCALL returned=5"), Net::ProtocolError.new("bad"),
       Net::HTTPBadResponse.new("wrong status line") ].each do |raw|
