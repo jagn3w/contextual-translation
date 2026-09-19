@@ -20,6 +20,18 @@ The design, decisions (D-numbers) and task list live in `design/` and are synced
 Ruby 3.4.10, Node 22, pnpm 10 (pinned in `mise.toml`), PostgreSQL 16. The dev container has all
 of them; elsewhere, `mise install`.
 
+## Running it locally
+
+```sh
+bin/dev          # Postgres + Rails (:3000) + Vite (:5173); open http://localhost:5173
+```
+
+`bin/dev` sets up what's missing on the first run: it copies `backend/.env` from `.env.example`
+(the fake translator, no API key), installs gems and packages, creates the database, and keeps
+Postgres data in `~/.cache/pg-dev`. Ctrl-C stops everything it started. To sign in, create an
+access code: `cd backend && bin/rails access_codes:create LABEL=Local`. The sections below run
+each half on its own.
+
 ## Checks
 
 `bin/check` runs every quality gate — RuboCop, Sorbet, Brakeman, Rails tests (including the
