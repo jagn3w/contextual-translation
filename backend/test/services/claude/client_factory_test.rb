@@ -120,6 +120,61 @@ class Claude::ClientFactoryTest < ActiveSupport::TestCase
     assert_requested second, times: 1
   end
 
+  test "a 401 is charged to the token the SDK actually sent, even if it changed after the wait" do
+    now = 1_000.0
+    fetches = 0
+    provider = Object.new
+    provider.define_singleton_method(:call) do
+      fetches += 1
+      Anthropic::Credentials::AccessToken.new(token: "token-#{fetches}", expires_at: (now + 3600).to_i)
+    end
+    refresher = Claude::TokenRefresher.new(provider:, clock: -> { now })
+    @refreshers << refresher
+    client = Anthropic::Client.new(credentials: refresher, max_retries: 0, timeout: 30)
+    stub_messages("token-2", status: 401, body: auth_error_body)
+    third = stub_messages("token-3", status: 200, body: message_body)
+    original = refresher.method(:await_token)
+    raced = false
+    # The half-life refresh lands between the translator's wait and the SDK building the request.
+    refresher.define_singleton_method(:await_token) do |timeout:, after: nil|
+      generation = original.call(timeout:, after:)
+      next generation if after || raced
+
+      raced = true
+      stop
+      now += 1801
+      start
+      Timeout.timeout(5) { sleep 0.01 until original.call(timeout: 5.0) == generation + 1 }
+      generation
+    end
+
+    result = Translation::ClaudeTranslator.new(client:).translate(hello)
+
+    assert_equal "Hola", result.text
+    assert_requested third, times: 1
+  end
+
+  test "an STS client built without credentials isn't kept, so the next fetch retries them" do
+    without = Aws::STS::Client.new(region: "us-east-1", stub_responses: { get_web_identity_token: Aws::Errors::MissingCredentialsError.new })
+    without.config.credentials = nil
+    built = [ without, ok_sts ]
+    factory = Claude::ClientFactory.singleton_class
+    factory.alias_method(:original_bounded_sts_client, :bounded_sts_client)
+    factory.define_method(:bounded_sts_client) { |_region| built.shift || raise("built a third STS client") }
+    stub_exchange(token_response("ok"))
+    provider = Claude::ClientFactory.build(WIF_ENV.to_h).credentials.instance_variable_get(:@provider)
+    identity = provider.instance_variable_get(:@identity_token_provider)
+
+    assert_raises(Aws::Errors::MissingCredentialsError) { identity.call }
+    assert_equal "sts.jwt.token", identity.call
+    assert_equal "sts.jwt.token", identity.call # the good client is kept
+  ensure
+    if factory&.method_defined?(:original_bounded_sts_client)
+      factory.alias_method(:bounded_sts_client, :original_bounded_sts_client)
+      factory.remove_method(:original_bounded_sts_client)
+    end
+  end
+
   test "no time left for credentials means UPSTREAM_UNREACHABLE, without calling Claude" do
     gate = Queue.new
     provider = Object.new

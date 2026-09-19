@@ -12,6 +12,12 @@ module Translation
     USAGE_LIMIT_MESSAGE = /\AYou have reached your specified (workspace )?API usage limits/
     # The account tier's spend cap: 429 with this error_code and no retry-after.
     TIER_SPEND_CAP_CODE = "enforced_spend_limit_reached"
+    # STS errors that are transient rather than a sign of misconfiguration.
+    TRANSIENT_STS_CODES = T.let(
+      %w[Throttling ThrottlingException RequestLimitExceeded IDPCommunicationError
+         ServiceUnavailable InternalFailure RequestTimeout].freeze,
+      T::Array[String]
+    )
 
     sig { params(error: StandardError).returns(T.nilable(Error)) }
     def self.map(error)
@@ -30,8 +36,10 @@ module Translation
         status = error.status_code
         status && (status >= 500 || status == 429) ? unreachable : misconfigured
       when Aws::Errors::ServiceError
+        # STS reports throttling and identity-provider hiccups as 400s, and aws-sdk-core's
+        # `throttling?`/`retryable?` are always false, so classify by error code.
         status = error.context&.http_response&.status_code.to_i
-        error.retryable? || error.throttling? || status >= 500 ? unreachable : misconfigured
+        TRANSIENT_STS_CODES.include?(error.code) || status >= 500 ? unreachable : misconfigured
       when Anthropic::Errors::APITimeoutError # before APIConnectionError: it's a subclass
         Error.new(ErrorCode::TIMEOUT, "The translation took too long.")
       when Anthropic::Errors::APIConnectionError

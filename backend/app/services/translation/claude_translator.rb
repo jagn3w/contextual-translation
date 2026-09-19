@@ -92,21 +92,22 @@ module Translation
     # retries are off.
     #
     # A 401 also gets that one retry with WIF credentials: the token was revoked or rotated, so
-    # the refresher fetches a newer one (unless it already has) and the SDK's token cache is
-    # cleared only once that token is in hand. If the refresh fails, the cache is left alone and
-    # nothing is left pending for the next request. If Claude rejects the replacement too, the
-    # refresher backs off and requests fail fast, rather than each forcing another exchange.
+    # the refresher fetches a newer one than the token this request actually sent (unless it
+    # already has), and the retry sends that. If the refresh fails, nothing is left pending for
+    # the next request. If Claude rejects the replacement too, the refresher backs off and
+    # requests fail fast, rather than each forcing another exchange.
     sig { params(request: Request, started: Float).returns(Anthropic::Models::Beta::BetaMessage) }
     def create_with_one_retry(request, started)
-      generation = await_credentials(started)
+      refresher = token_refresher
+      await_credentials(started)
       begin
         create_message(request, timeout: call_timeout(started))
       rescue Anthropic::Errors::AuthenticationError => e
-        raise e if generation.nil? || remaining_seconds(started) < MIN_RETRY_SECONDS
+        rejected = refresher&.generation_sent
+        raise e if rejected.nil? || remaining_seconds(started) < MIN_RETRY_SECONDS
 
         @logger.warn("Claude 401 (request_id=#{e.request_id}); refreshing credentials and retrying once")
-        await_credentials(started, after: generation)
-        T.must(@client.token_cache).invalidate
+        await_credentials(started, after: rejected)
         create_message(request, timeout: call_timeout(started))
       rescue Anthropic::Errors::RateLimitError, Anthropic::Errors::InternalServerError => e
         raise e if e.is_a?(Anthropic::Errors::RateLimitError) &&
@@ -123,14 +124,17 @@ module Translation
     end
 
     # With WIF credentials, waits for a usable token (keeping MIN_CALL_SECONDS of the deadline
-    # for the Claude call) and returns its generation; with `after`, for a newer token than that
-    # generation. Returns nil for API-key clients.
-    sig { params(started: Float, after: T.nilable(Integer)).returns(T.nilable(Integer)) }
+    # for the Claude call); with `after`, for a newer token than that generation. A no-op for
+    # API-key clients.
+    sig { params(started: Float, after: T.nilable(Integer)).void }
     def await_credentials(started, after: nil)
-      refresher = credentials
-      return nil unless refresher.is_a?(Claude::TokenRefresher)
+      token_refresher&.await_token(timeout: remaining_seconds(started) - MIN_CALL_SECONDS, after:)
+    end
 
-      refresher.await_token(timeout: remaining_seconds(started) - MIN_CALL_SECONDS, after:)
+    sig { returns(T.nilable(Claude::TokenRefresher)) }
+    def token_refresher
+      refresher = credentials
+      refresher.is_a?(Claude::TokenRefresher) ? refresher : nil
     end
 
     sig { params(started: Float).returns(Float) }

@@ -59,7 +59,13 @@ module Claude
       # bound a slow STS; only the refresher's background thread waits on it.
       sts_client = T.let(sts, T.nilable(Aws::STS::Client))
       workload_identity = Anthropic::Credentials::WorkloadIdentity.new(
-        identity_token_provider: -> { identity_token(sts_client ||= bounded_sts_client(region)) },
+        identity_token_provider: lambda do
+          client = sts_client || bounded_sts_client(region)
+          # Keep it only once it has credentials: one built while instance metadata was briefly
+          # unreachable resolves none, and would fail every fetch until the process restarts.
+          sts_client = client if client.config.credentials
+          identity_token(client)
+        end,
         **federation
       )
       credentials = TokenRefresher.new(provider: workload_identity)

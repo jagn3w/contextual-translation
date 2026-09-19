@@ -198,9 +198,17 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     end
     assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, sts.call(503)
     assert_equal Translation::ErrorCode::SERVICE_MISCONFIGURED, sts.call(403)
-    throttled = Aws::STS::Errors::ServiceError.new(Seahorse::Client::RequestContext.new, "slow down")
-    throttled.define_singleton_method(:throttling?) { true }
-    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, Translation::ClaudeErrorMapper.map(throttled)&.code
+
+    # Errors as the real SDK raises them: STS sends these as HTTP 400.
+    raised = ->(code) do
+      client = Aws::STS::Client.new(region: "us-east-1", stub_responses: { get_web_identity_token: code })
+      client.get_web_identity_token(audience: [ "a" ], signing_algorithm: "RS256")
+    rescue Aws::STS::Errors::ServiceError => e
+      Translation::ClaudeErrorMapper.map(e)&.code
+    end
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, raised.call("Throttling")
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, raised.call("IDPCommunicationError")
+    assert_equal Translation::ErrorCode::SERVICE_MISCONFIGURED, raised.call("AccessDenied")
   end
 
   test "TLS and HTTP protocol failures outside the SDK are UPSTREAM_UNREACHABLE" do
