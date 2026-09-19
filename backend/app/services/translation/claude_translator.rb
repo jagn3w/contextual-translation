@@ -94,7 +94,8 @@ module Translation
     # A 401 also gets that one retry with WIF credentials: the token was revoked or rotated, so
     # the refresher fetches a newer one (unless it already has) and the SDK's token cache is
     # cleared only once that token is in hand. If the refresh fails, the cache is left alone and
-    # nothing is left pending for the next request.
+    # nothing is left pending for the next request. If Claude rejects the replacement too, the
+    # refresher backs off and requests fail fast, rather than each forcing another exchange.
     sig { params(request: Request, started: Float).returns(Anthropic::Models::Beta::BetaMessage) }
     def create_with_one_retry(request, started)
       generation = await_credentials(started)

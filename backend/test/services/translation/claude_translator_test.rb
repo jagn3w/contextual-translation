@@ -179,6 +179,28 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
       unavailable.call(Anthropic::Credentials::WorkloadIdentityError.new("invalid_grant"))
     assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, unavailable.call(Net::OpenTimeout.new)
     assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, unavailable.call(nil)
+    assert_equal Translation::ErrorCode::SERVICE_MISCONFIGURED, unavailable.call(Claude::TokenRefresher::TokenRejected.new("x"))
+    assert_equal Translation::ErrorCode::UPSTREAM_ERROR, unavailable.call(Claude::TokenRefresher::ShortLivedToken.new("x"))
+    assert_nil unavailable.call(TypeError.new("a bug")), "an unanticipated cause re-raises as unexpected"
+  end
+
+  test "token-endpoint and STS outages are UPSTREAM_UNREACHABLE; their other failures are SERVICE_MISCONFIGURED" do
+    wif = ->(status) { Translation::ClaudeErrorMapper.map(Anthropic::Credentials::WorkloadIdentityError.new("x", status_code: status))&.code }
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, wif.call(503)
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, wif.call(429)
+    assert_equal Translation::ErrorCode::SERVICE_MISCONFIGURED, wif.call(400)
+    assert_equal Translation::ErrorCode::SERVICE_MISCONFIGURED, wif.call(nil)
+
+    sts = ->(status) do
+      context = Seahorse::Client::RequestContext.new
+      context.http_response.status_code = status
+      Translation::ClaudeErrorMapper.map(Aws::STS::Errors::ServiceError.new(context, "x"))&.code
+    end
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, sts.call(503)
+    assert_equal Translation::ErrorCode::SERVICE_MISCONFIGURED, sts.call(403)
+    throttled = Aws::STS::Errors::ServiceError.new(Seahorse::Client::RequestContext.new, "slow down")
+    throttled.define_singleton_method(:throttling?) { true }
+    assert_equal Translation::ErrorCode::UPSTREAM_UNREACHABLE, Translation::ClaudeErrorMapper.map(throttled)&.code
   end
 
   test "TLS and HTTP protocol failures outside the SDK are UPSTREAM_UNREACHABLE" do

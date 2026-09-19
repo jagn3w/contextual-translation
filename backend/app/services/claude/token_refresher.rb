@@ -13,7 +13,9 @@ module Claude
   # Request threads get two entry points, neither of which fetches:
   # - `call`, the Anthropic::Client credentials provider, returns the current token or raises
   #   TokenUnavailable, and never waits. The SDK's TokenCache calls it untimed from request
-  #   threads, so it must be instant; that makes the cache a passthrough.
+  #   threads, so it must be instant. It hands out copies that expire inside the cache's
+  #   advisory window, so the cache asks again on every request rather than keeping an older
+  #   token after a refresh.
   # - `await_token`, which ClaudeTranslator calls before each Claude request, waits a bounded
   #   time for a usable token, or for a newer one after a 401.
   class TokenRefresher
@@ -23,11 +25,19 @@ module Claude
     MIN_VALIDITY_SECONDS = 60.0
     INITIAL_BACKOFF_SECONDS = 5.0
     MAX_BACKOFF_SECONDS = 60.0
+    # The SDK's TokenCache returns its cached token without asking us until the token is within
+    # ADVISORY_REFRESH_SECONDS of expiry; the copies `call` hands out are always inside that.
+    HANDOUT_SECONDS = T.let(Anthropic::Credentials::ADVISORY_REFRESH_SECONDS / 2, Integer)
 
     # No usable token within the caller's time budget. The underlying fetch failure, if any, is
     # the `cause`. An Anthropic error so that, raised from `call` inside the SDK's TokenCache
     # advisory window, the cache falls back to its still-valid token instead of failing.
     class TokenUnavailable < Anthropic::Errors::Error; end
+    # Claude rejected a token that was itself fetched because of a 401. Another fetch won't
+    # help (the service account or federation rule is likely wrong), so the warmer backs off.
+    class TokenRejected < StandardError; end
+    # The token endpoint returned a token that is already (nearly) expired.
+    class ShortLivedToken < StandardError; end
 
     Clock = T.type_alias { T.proc.returns(Float) }
     Sleeper = T.type_alias { T.proc.params(seconds: Float).void }
@@ -54,19 +64,28 @@ module Claude
       @generation = T.let(0, Integer)
       # A request had a token of this generation (or older) rejected: fetch a newer one now.
       @refresh_after = T.let(nil, T.nilable(Integer))
+      # The latest generation fetched because of a 401, and a rejection of it for the warmer.
+      @forced_generation = T.let(nil, T.nilable(Integer))
+      @rejection = T.let(nil, T.nilable(TokenRejected))
       @backing_off = T.let(false, T::Boolean)
       @last_error = T.let(nil, T.nilable(StandardError))
       @thread = T.let(nil, T.nilable(Thread))
     end
 
-    # The Anthropic::Client credentials interface. Never fetches and never waits.
+    # The Anthropic::Client credentials interface. Never fetches and never waits. The copy it
+    # returns expires within HANDOUT_SECONDS by the cache's clock (wall time), so the SDK sends
+    # whichever token is current when each request is built.
     sig { returns(Anthropic::Credentials::AccessToken) }
     def call
       @lock.synchronize do
         token = @current
-        return token if token && usable?(token)
+        raise_unavailable("no usable Claude access token") unless token && usable?(token)
 
-        raise_unavailable("no usable Claude access token")
+        handout_until = Time.now.to_i + HANDOUT_SECONDS
+        expires_at = token.expires_at
+        return token if expires_at && expires_at <= handout_until
+
+        Anthropic::Credentials::AccessToken.new(token: token.token, expires_at: handout_until)
       end
     end
 
@@ -136,13 +155,15 @@ module Claude
     def run
       delay = INITIAL_BACKOFF_SECONDS
       loop do
-        wait_until_due
-        error = fetch
+        due = wait_until_due
+        error = due.is_a?(StandardError) ? due : fetch(forced: due == :forced)
         if error
           @logger.error("Claude WIF token refresh failed (#{error.class}: #{error.message.truncate(200)}); retrying in #{delay.round}s")
           @sleeper.call(delay)
           delay = [ delay * 2, MAX_BACKOFF_SECONDS ].min
-        else
+        elsif due == :scheduled
+          # Only a routine refresh resets the backoff: a fetch forced by a 401 can succeed and
+          # still produce tokens Claude rejects.
           delay = INITIAL_BACKOFF_SECONDS
         end
       end
@@ -151,26 +172,44 @@ module Claude
       @logger.error("Claude WIF token refresher stopped: #{e.class}: #{e.message}")
     end
 
-    sig { void }
+    # Waits until a fetch is due and says why: :scheduled, or :forced by a 401. Returns the
+    # rejection instead when Claude rejected a token a 401 had already replaced, so the warmer
+    # backs off before fetching again.
+    sig { returns(T.any(Symbol, TokenRejected)) }
     def wait_until_due
       @lock.synchronize do
-        while (wait = refresh_due_in).nil? || wait.positive?
+        loop do
+          if (rejection = @rejection)
+            @rejection = nil
+            return rejection
+          end
+          wait = refresh_due_in
+          break if wait && !wait.positive?
+
           @changed.wait(@lock, wait)
         end
         # A fetch is starting: requests can wait for it again.
         @backing_off = false
+        refresh_requested? ? :forced : :scheduled
       end
     end
 
     # Calls the provider outside the lock, since it can take tens of seconds. Returns the
-    # failure, if any.
-    sig { returns(T.nilable(StandardError)) }
-    def fetch
+    # failure, if any. A token that is already unusable counts as a failure, or the warmer
+    # would fetch again at once, in a loop.
+    sig { params(forced: T::Boolean).returns(T.nilable(StandardError)) }
+    def fetch(forced:)
       token = @provider.call
+      unless usable?(token)
+        raise ShortLivedToken, "the token endpoint returned a token that expires in " \
+                               "#{(token.expires_at.to_f - @clock.call).round}s"
+      end
+
       @lock.synchronize do
         @current = token
         @fetched_at = @clock.call
         @generation += 1
+        @forced_generation = @generation if forced
         @last_error = nil
         @changed.broadcast
       end
@@ -185,13 +224,30 @@ module Claude
       e
     end
 
-    # Callers hold the lock. A no-op once a newer token exists or the refresh was already asked for.
+    # Callers hold the lock. A no-op once a newer token exists or the refresh was already asked
+    # for. If the rejected token was itself fetched because of a 401, this counts as a failed
+    # fetch: requests fail fast and the warmer backs off, so a persistent 401 costs one token
+    # exchange per backoff interval rather than one per request.
     sig { params(after: Integer).void }
     def request_refresh(after)
       return if @generation > after || @refresh_after == after
 
       @refresh_after = after
+      if @forced_generation == after
+        rejection = TokenRejected.new("Claude rejected a token fetched after a 401; check the " \
+                                      "service account and federation rule")
+        @rejection = rejection
+        @last_error = rejection
+        @backing_off = true
+      end
       @changed.broadcast
+    end
+
+    # Callers hold the lock.
+    sig { returns(T::Boolean) }
+    def refresh_requested?
+      requested = @refresh_after
+      !requested.nil? && @generation <= requested
     end
 
     # Callers hold the lock.
@@ -200,8 +256,7 @@ module Claude
       token = @current
       return 0.0 if token.nil? || !usable?(token)
 
-      requested = @refresh_after
-      return 0.0 if requested && @generation <= requested
+      return 0.0 if refresh_requested?
 
       expires_at = token.expires_at
       return nil if expires_at.nil?

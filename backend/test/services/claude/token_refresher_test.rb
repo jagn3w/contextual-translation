@@ -142,7 +142,7 @@ class Claude::TokenRefresherTest < ActiveSupport::TestCase
     generation = @refresher.await_token(timeout: 5.0)
     @provider.gate = Queue.new
     waiters = 5.times.map { Thread.new { @refresher.await_token(timeout: 5.0, after: generation) } }
-    sleep 0.1 until @provider.callers.size == 2
+    Timeout.timeout(5) { sleep 0.01 until @provider.callers.size == 2 }
 
     @provider.gate << true
 
@@ -202,6 +202,55 @@ class Claude::TokenRefresherTest < ActiveSupport::TestCase
     @refresher.instance_variable_get(:@thread).kill.join(1)
 
     assert_equal generation + 1, @refresher.await_token(timeout: 5.0, after: generation)
+  end
+
+  test "call hands the SDK a copy expiring inside its cache's advisory window" do
+    provider = Object.new
+    provider.define_singleton_method(:call) { Anthropic::Credentials::AccessToken.new(token: "real", expires_at: Time.now.to_i + 3600) }
+    refresher = Claude::TokenRefresher.new(provider:)
+    refresher.start
+    refresher.await_token(timeout: 5.0)
+
+    handed_out = refresher.call
+
+    assert_equal "real", handed_out.token
+    assert_operator handed_out.expires_at, :<=, Time.now.to_f + Anthropic::Credentials::ADVISORY_REFRESH_SECONDS
+  ensure
+    refresher&.stop
+  end
+
+  test "a persistent 401 backs off instead of forcing an exchange per request" do
+    @refresher.start
+    first = @refresher.await_token(timeout: 5.0)
+    forced = @refresher.await_token(timeout: 5.0, after: first) # the 401 on a scheduled token
+    started = monotonic
+
+    error = assert_raises(Claude::TokenRefresher::TokenUnavailable) { @refresher.await_token(timeout: 30.0, after: forced) }
+    assert_instance_of Claude::TokenRefresher::TokenRejected, error.cause
+    assert_raises(Claude::TokenRefresher::TokenUnavailable) { @refresher.await_token(timeout: 30.0, after: forced) }
+    assert_operator monotonic - started, :<, 0.5
+    assert_equal 2, @provider.calls
+    assert_equal 5.0, Timeout.timeout(5) { @sleeps.pop }
+
+    @wake << true # the backoff ends: one more forced fetch
+    Timeout.timeout(5) { sleep 0.01 until @refresher.await_token(timeout: 5.0) == forced + 1 }
+    assert_raises(Claude::TokenRefresher::TokenUnavailable) { @refresher.await_token(timeout: 30.0, after: forced + 1) }
+
+    assert_equal 10.0, Timeout.timeout(5) { @sleeps.pop } # a successful forced fetch doesn't reset it
+    assert_equal 3, @provider.calls
+  end
+
+  test "a token that is already unusable counts as a failed fetch, not a loop" do
+    provider = FakeProvider.new(-> { @now }, ttl: 30)
+    refresher = Claude::TokenRefresher.new(provider:, clock: -> { @now }, sleeper: ->(s) { @sleeps << s; @wake.pop })
+    refresher.start
+
+    assert_equal 5.0, Timeout.timeout(5) { @sleeps.pop }
+    error = assert_raises(Claude::TokenRefresher::TokenUnavailable) { refresher.await_token(timeout: 5.0) }
+    assert_instance_of Claude::TokenRefresher::ShortLivedToken, error.cause
+    assert_equal 1, provider.calls
+  ensure
+    refresher&.stop
   end
 
   test "passes the SDK's base URL through to the wrapped provider" do

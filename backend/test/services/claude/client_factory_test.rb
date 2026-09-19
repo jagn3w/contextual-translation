@@ -89,6 +89,37 @@ class Claude::ClientFactoryTest < ActiveSupport::TestCase
     assert_equal false, client.token_cache.instance_variable_get(:@next_force)
   end
 
+  test "a persistent 401 costs at most two token exchanges, and later requests fail fast" do
+    exchange = stub_exchange(token_response("a"), token_response("b"), token_response("c"))
+    stub_request(:post, %r{\Ahttps://api\.anthropic\.com/v1/messages})
+      .to_return(status: 401, headers: { "Content-Type" => "application/json" }, body: auth_error_body)
+    client = build_wif(ok_sts)
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    3.times do
+      error = assert_raises(Translation::Error) { translate(client) }
+      assert_equal Translation::ErrorCode::SERVICE_MISCONFIGURED, error.code
+    end
+
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 2.0
+    assert_requested exchange, times: 2
+  end
+
+  test "after a refresh the SDK sends the new token, not the one its cache held" do
+    stub_exchange(token_response("first"), token_response("second"))
+    first = stub_messages("first", status: 200, body: message_body)
+    second = stub_messages("second", status: 200, body: message_body)
+    client = build_wif(ok_sts)
+    translate(client)
+    refresher = client.credentials
+    refresher.await_token(timeout: 5.0, after: refresher.await_token(timeout: 5.0)) # e.g. the half-life refresh
+
+    translate(client)
+
+    assert_requested first, times: 1
+    assert_requested second, times: 1
+  end
+
   test "no time left for credentials means UPSTREAM_UNREACHABLE, without calling Claude" do
     gate = Queue.new
     provider = Object.new

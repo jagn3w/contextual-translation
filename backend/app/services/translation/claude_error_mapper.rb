@@ -17,10 +17,21 @@ module Translation
     def self.map(error)
       case error
       when Claude::TokenRefresher::TokenUnavailable
-        # Named for why no token could be had: a WIF misconfiguration, or an unreachable STS or
-        # token endpoint. With no fetch failure behind it, the fetch is just slow.
+        # Named for why no token could be had. With no fetch failure behind it, the fetch is
+        # just slow. An unanticipated cause maps to nil, so it re-raises as unexpected.
         cause = error.cause
-        (map(cause) if cause.is_a?(StandardError)) || unreachable
+        cause.is_a?(StandardError) ? map(cause) : unreachable
+      when Claude::TokenRefresher::TokenRejected
+        misconfigured
+      when Claude::TokenRefresher::ShortLivedToken
+        Error.new(ErrorCode::UPSTREAM_ERROR, "Claude had a problem.")
+      when Anthropic::Credentials::WorkloadIdentityError
+        # The token endpoint's own outages are transient; anything else is our configuration.
+        status = error.status_code
+        status && (status >= 500 || status == 429) ? unreachable : misconfigured
+      when Aws::Errors::ServiceError
+        status = error.context&.http_response&.status_code.to_i
+        error.retryable? || error.throttling? || status >= 500 ? unreachable : misconfigured
       when Anthropic::Errors::APITimeoutError # before APIConnectionError: it's a subclass
         Error.new(ErrorCode::TIMEOUT, "The translation took too long.")
       when Anthropic::Errors::APIConnectionError
@@ -40,9 +51,8 @@ module Translation
       when Anthropic::Errors::BadRequestError
         budget_exceeded if USAGE_LIMIT_MESSAGE.match?(error_message(error))
       when Anthropic::Errors::AuthenticationError, Anthropic::Errors::PermissionDeniedError,
-           Anthropic::Errors::NotFoundError, Anthropic::Credentials::WorkloadIdentityError,
-           Aws::Errors::MissingCredentialsError, Aws::Errors::ServiceError
-        Error.new(ErrorCode::SERVICE_MISCONFIGURED, "The translation service isn't configured correctly.")
+           Anthropic::Errors::NotFoundError, Aws::Errors::MissingCredentialsError
+        misconfigured
       when Anthropic::Errors::APIStatusError
         budget_exceeded if error.status == 402 || error.type.to_s == "billing_error"
       when Seahorse::Client::NetworkingError, Timeout::Error, SocketError, SystemCallError, IOError,
@@ -51,6 +61,11 @@ module Translation
         # exchange (Net::HTTP). They arrive as the cause of a TokenUnavailable.
         unreachable
       end
+    end
+
+    sig { returns(Error) }
+    def self.misconfigured
+      Error.new(ErrorCode::SERVICE_MISCONFIGURED, "The translation service isn't configured correctly.")
     end
 
     sig { returns(Error) }
