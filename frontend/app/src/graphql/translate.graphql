@@ -3,6 +3,7 @@ mutation Translate($input: TranslateInput!) {
     translation {
       text
       notes
+      furigana
       sourceLanguage
       targetLanguage
     }

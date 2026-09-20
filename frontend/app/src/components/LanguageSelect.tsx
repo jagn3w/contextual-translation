@@ -12,12 +12,14 @@ type Props = {
 export function LanguageSelect({ label, value, onChange }: Props) {
   return (
     <Select.Root value={value} onValueChange={(next) => onChange(next as Language)}>
+      {/* min-w-0 + truncate: the language bar is one row even on a ~360px phone, so the name gives
+          way rather than pushing the row wider than the screen. The chevron never shrinks. */}
       <Select.Trigger
         aria-label={label}
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-ink hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+        className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-ink hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
       >
-        <Select.Value>{languageName(value)}</Select.Value>
-        <Select.Icon className="text-muted" aria-hidden>
+        <Select.Value className="truncate">{languageName(value)}</Select.Value>
+        <Select.Icon className="shrink-0 text-muted" aria-hidden>
           ▾
         </Select.Icon>
       </Select.Trigger>

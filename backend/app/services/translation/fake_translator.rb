@@ -13,8 +13,12 @@ module Translation
     sig { override.params(request: Request).returns(Result) }
     def translate(request)
       tag = request.target_language.serialize.upcase
+      text = "[#{tag}] #{request.source_text}"
       notes = request.context.present? ? "Fake translation using context: #{request.context}" : nil
-      Result.new(text: "[#{tag}] #{request.source_text}", notes:, model: MODEL)
+      # One annotation on the tag, so the dev and test paths exercise ruby rendering. It still
+      # strips back to `text` exactly, which is what ClaudeTranslator requires of the real thing.
+      furigana = request.target_language == Language::JA ? text.sub("]", "]《ジェイエー》") : nil
+      Result.new(text:, notes:, furigana:, model: MODEL)
     end
   end
 end

@@ -15,17 +15,17 @@ afterEach(() => {
 
 describe("App session flow", () => {
   it("restores an existing session on load", async () => {
-    server.onGraphql("Viewer", () => viewer("Side project"));
+    server.onGraphql("Viewer", () => viewer());
 
     render(<App />);
 
-    expect(await screen.findByText("Side project")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Access code")).not.toBeInTheDocument();
   });
 
   it("asks for an access code when signed out, then enters the app", async () => {
     let signedIn = false;
-    server.onGraphql("Viewer", () => (signedIn ? viewer("Panel") : unauthenticated()));
+    server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
     server.onSession("POST", (body) => {
       if (body["code"] !== "ctx-GOOD") return json({ error: "invalid_code" }, 401);
       signedIn = true;
@@ -44,7 +44,7 @@ describe("App session flow", () => {
     await user.type(input, "  ctx-GOOD ");
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
-    expect(await screen.findByText("Panel")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(server.requests.find((request) => request.url.endsWith("/api/session"))?.body).toEqual({ code: "ctx-BAD" });
   });
 
@@ -81,7 +81,7 @@ describe("App session flow", () => {
     server.onGraphql("Viewer", () => {
       attempts += 1;
       if (attempts === 1) throw new TypeError("Failed to fetch");
-      return viewer("Back online");
+      return viewer();
     });
     const user = userEvent.setup();
 
@@ -89,11 +89,11 @@ describe("App session flow", () => {
     expect(await screen.findByText(/Couldn't reach the server/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Try again" }));
 
-    expect(await screen.findByText("Back online")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Sign out" })).toBeInTheDocument();
   });
 
   it("stays signed in, and says so, when signing out fails", async () => {
-    server.onGraphql("Viewer", () => viewer("Panel"));
+    server.onGraphql("Viewer", () => viewer());
     server.onSession("DELETE", () => json({ error: "forbidden_origin" }, 403));
     const user = userEvent.setup();
 
@@ -101,7 +101,7 @@ describe("App session flow", () => {
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
 
     expect(await screen.findByText(/Couldn't sign out/)).toBeInTheDocument();
-    expect(screen.getByText("Panel")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Access code")).not.toBeInTheDocument();
   });
 });

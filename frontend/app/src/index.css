@@ -6,10 +6,17 @@
     "Noto Sans JP", sans-serif;
 
   --color-canvas: #ffffff;
+  /* The hover tint (header button, language pickers, Radix items): must stay light. */
   --color-surface: #f7f7f5;
+  /* The result frame alone: surface's hue and saturation (60deg, 11%) taken down to lightness 80,
+     so the target pane reads as a distinct, settled surface rather than a second sheet of paper. */
+  --color-frame: #d2d2c6;
   --color-ink: #37352f;
   --color-muted: #787774;
-  --color-line: #e9e9e7;
+  /* --color-muted only reaches 2.9:1 on the frame; this one is 4.7:1, so secondary text inside the
+     result pane (the placeholder, Claude's note) still clears WCAG AA. */
+  --color-frame-muted: #585755;
+  --color-line: #d8d8d4;
   --color-accent: #2383e2;
   --color-accent-ink: #ffffff;
   --color-danger: #d44c47;

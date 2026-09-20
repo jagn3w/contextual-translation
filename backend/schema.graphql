@@ -147,6 +147,13 @@ type TranslatePayload {
 
 type Translation {
   """
+  For Japanese, `text` repeated with a reading in double angle brackets after
+  each run of kanji (漢字《かんじ》); removing every 《…》 group gives back `text`. Null
+  when there is none.
+  """
+  furigana: String
+
+  """
   Claude's note on the meaning, formality and regional variety it chose.
   """
   notes: String

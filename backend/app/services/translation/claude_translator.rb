@@ -20,6 +20,9 @@ module Translation
     MIN_RETRY_SECONDS = 10.0
     # Time kept back for the Claude call itself when waiting for credentials.
     MIN_CALL_SECONDS = 10.0
+    # Furigana notation: a reading in double angle brackets follows the run of kanji it reads,
+    # 漢字《かんじ》 (design D2.3).
+    FURIGANA_READING = /《[^》]*》/
 
     sig do
       params(
@@ -54,7 +57,7 @@ module Translation
       started = @clock.call
       message = create_with_one_retry(request, started)
       log_usage(message, started)
-      result_from(message)
+      result_from(message, request)
     rescue StandardError => e
       raise if e.is_a?(Translation::Error)
 
@@ -157,8 +160,8 @@ module Translation
       [ ClaudeErrorMapper.retry_after(error) || 1, 5 ].min.to_f
     end
 
-    sig { params(message: Anthropic::Models::Beta::BetaMessage).returns(Result) }
-    def result_from(message)
+    sig { params(message: Anthropic::Models::Beta::BetaMessage, request: Request).returns(Result) }
+    def result_from(message, request)
       case message.stop_reason
       when :refusal
         raise Error.new(ErrorCode::REFUSED, "Claude declined to translate this text.")
@@ -180,8 +183,28 @@ module Translation
         raise Error.new(ErrorCode::UPSTREAM_ERROR, "Claude returned an unreadable response.")
       end
 
-      notes = T.cast(parsed, T::Hash[String, T.untyped])["notes"]
-      Result.new(text: translation, notes: notes.is_a?(String) ? notes.presence : nil, model: message.model.to_s)
+      fields = T.cast(parsed, T::Hash[String, T.untyped])
+      notes = fields["notes"]
+      Result.new(
+        text: translation, notes: notes.is_a?(String) ? notes.presence : nil,
+        furigana: furigana_from(fields["furigana"], translation, request), model: message.model.to_s
+      )
+    end
+
+    # Furigana is only useful if it is the translation with readings added, so check it rather
+    # than trust it: strip every 《…》 group and the translation must come back character for
+    # character. Anything else (a non-Japanese target, an empty or reworded string, no readings
+    # at all) becomes nil and the UI shows plain text.
+    sig { params(value: T.untyped, translation: String, request: Request).returns(T.nilable(String)) }
+    def furigana_from(value, translation, request)
+      return nil unless request.target_language == Language::JA
+      return nil unless value.is_a?(String) && value.match?(FURIGANA_READING)
+      return value if value.gsub(FURIGANA_READING, "") == translation
+
+      # Never log either string: both are the user's text (design D4.2).
+      @logger.warn("Claude returned furigana that doesn't match the translation " \
+                   "(#{value.bytesize} bytes vs #{translation.bytesize}); dropping it")
+      nil
     end
 
     sig { params(message: Anthropic::Models::Beta::BetaMessage, started: Float).void }

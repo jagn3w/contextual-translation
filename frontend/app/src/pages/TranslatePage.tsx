@@ -2,13 +2,14 @@ import { useMutation } from "@apollo/client/react";
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { LanguageSelect } from "../components/LanguageSelect.tsx";
-import { type Language, TranslateDocument, type TranslateMutation, type ViewerQuery } from "../gql/graphql.ts";
+import { type Language, TranslateDocument, type TranslateMutation } from "../gql/graphql.ts";
 import { failureMessage } from "../lib/failureMessage.ts";
+import { parseFurigana } from "../lib/furigana.ts";
 import { describeRequestError } from "../lib/requestFailure.ts";
 import { translateErrorMessage } from "../lib/translateErrorMessage.ts";
+import { useAutoGrowTextarea } from "../lib/useAutoGrowTextarea.ts";
 
 type Props = {
-  viewer: ViewerQuery["viewer"];
   onSignOut: () => void;
 };
 
@@ -17,6 +18,29 @@ type Translation = NonNullable<TranslateMutation["translate"]["translation"]> & 
   fromText: string;
   fromContext: string;
 };
+
+/**
+ * What one language holds, whichever pane it happens to be in (design MVP, D1.4). `target` is the
+ * last text of this language Claude has seen — either what it returned in this language, or what
+ * it was asked to translate out of it — and `input` is that text plus any edits made since.
+ * Keeping the text with the language is what makes the swap button a pure exchange of language
+ * codes, so swapping twice is exactly identity.
+ */
+type LanguageBuffer = { input: string; target: string };
+type Buffers = Record<Language, LanguageBuffer>;
+
+const EMPTY_BUFFERS: Buffers = {
+  EN: { input: "", target: "" },
+  ES: { input: "", target: "" },
+  JA: { input: "", target: "" },
+};
+
+/** The buffers with one language replaced; every other language keeps the text it was holding. */
+function withBuffer(buffers: Buffers, language: Language, buffer: LanguageBuffer): Buffers {
+  const next = { ...buffers };
+  next[language] = buffer;
+  return next;
+}
 
 // Each attempt gets its own toast id: sonner merges an update into an existing toast, so reusing
 // one id would let a retryable toast's "Try again" survive into a later, non-retryable error.
@@ -28,6 +52,25 @@ export function codePointLength(text: string): number {
   let count = 0;
   for (const _ of text) count += 1;
   return count;
+}
+
+/**
+ * Claude's Japanese with a reading over each run of kanji (design D2.3, design D1.4). `<ruby>`
+ * keeps the translation itself as the pane's text, so what a user selects and copies is the plain
+ * sentence: the 《…》 markup never reaches the DOM.
+ */
+function rubyText(annotated: string) {
+  return parseFurigana(annotated).map((segment, index) =>
+    segment.reading === undefined ? (
+      segment.text
+    ) : (
+      // The segments are a pure function of one string, so the index is a stable identity.
+      <ruby key={index}>
+        {segment.text}
+        <rt className="text-[0.5em] text-frame-muted">{segment.reading}</rt>
+      </ruby>
+    ),
+  );
 }
 
 /** Seconds since `active` became true, ticking once a second; null when inactive. */
@@ -55,12 +98,13 @@ export const MAX_CONTEXT_LENGTH = 2_000;
  * (read-only) side by side like Google Translate, each with a language picker and a swap button
  * between them; the context field and the Update Translation button below.
  */
-export function TranslatePage({ viewer, onSignOut }: Props) {
+export function TranslatePage({ onSignOut }: Props) {
   const sourceId = useId();
   const contextId = useId();
   const [sourceLanguage, setSourceLanguage] = useState<Language>("EN");
-  const [targetLanguage, setTargetLanguage] = useState<Language>("ES");
-  const [sourceText, setSourceText] = useState("");
+  // Japanese is the default target: the demo's showcase pair is English → Japanese (design MVP).
+  const [targetLanguage, setTargetLanguage] = useState<Language>("JA");
+  const [buffers, setBuffers] = useState<Buffers>(EMPTY_BUFFERS);
   const [context, setContext] = useState("");
   const [translation, setTranslation] = useState<Translation | null>(null);
   const [translate, { loading }] = useMutation(TranslateDocument);
@@ -85,13 +129,38 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
   // Screen-reader announcements: one always-mounted live region, updated per request.
   const [announcement, setAnnouncement] = useState("");
 
-  const sourceEdited = translation !== null && translation.fromText !== sourceText;
-  const stale =
+  // The panes are just a view of the two buffers: the source pane edits its language's `input`,
+  // the result pane shows the other language's `target`.
+  const sourceText = buffers[sourceLanguage].input;
+  const resultText = buffers[targetLanguage].target;
+  // Neither editable box scrolls: each grows with the text it holds (design D1.4), and the
+  // result pane beside the source one is a plain div, so it has always grown.
+  const sourceRef = useAutoGrowTextarea(sourceText);
+  const contextRef = useAutoGrowTextarea(context);
+  // What's on screen is up to date when it is still exactly the pair Claude last answered for —
+  // in either direction, since a swap only exchanges the language codes — under the same context.
+  const matchesLastResponse =
     translation !== null &&
-    (sourceEdited ||
-      translation.fromContext !== context ||
-      translation.sourceLanguage !== sourceLanguage ||
-      translation.targetLanguage !== targetLanguage);
+    translation.fromContext === context &&
+    ((sourceLanguage === translation.sourceLanguage &&
+      targetLanguage === translation.targetLanguage &&
+      sourceText === translation.fromText) ||
+      (sourceLanguage === translation.targetLanguage &&
+        targetLanguage === translation.sourceLanguage &&
+        sourceText === translation.text));
+  const stale = resultText !== "" && !matchesLastResponse;
+  // Everything Claude sent *about* its answer — the notes, the readings — belongs to one response
+  // in one direction. After a swap the result pane shows the text that was translated *from*,
+  // which has none of that of its own, so the pane is plain text there.
+  const showingResponseOutput =
+    translation !== null &&
+    sourceLanguage === translation.sourceLanguage &&
+    targetLanguage === translation.targetLanguage &&
+    resultText === translation.text;
+  const responseNotes = showingResponseOutput ? translation.notes : null;
+  // Null whenever the backend had no readings to give (design D2.3) — a non-Japanese target, or
+  // Japanese it couldn't annotate — and the pane falls back to plain text.
+  const responseFurigana = showingResponseOutput ? translation.furigana : null;
   const sourceLength = codePointLength(sourceText);
   const contextLength = codePointLength(context);
   const sourceTooLong = sourceLength > MAX_SOURCE_LENGTH;
@@ -109,20 +178,16 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
     setTargetLanguage(language);
   }
 
-  // Like Google Translate: swap the languages and move the translation into the source pane.
-  // The translation carries its own languages, so the text keeps the right label even if the
-  // pickers changed after translating.
+  // Like Google Translate, the swap button puts the translation in the editable pane — but it does
+  // so by exchanging the language codes alone: each language's text follows it between the panes,
+  // nothing is moved or dropped, so swapping twice lands back on an identical state.
   function swap() {
-    // Never overwrite text the user has typed since translating: swap only the languages.
-    if (translation !== null && !sourceEdited) {
-      setSourceLanguage(translation.targetLanguage);
-      setTargetLanguage(translation.sourceLanguage);
-      setSourceText(translation.text);
-      setTranslation(null);
-    } else {
-      setSourceLanguage(targetLanguage);
-      setTargetLanguage(sourceLanguage);
-    }
+    setSourceLanguage(targetLanguage);
+    setTargetLanguage(sourceLanguage);
+  }
+
+  function editSource(text: string) {
+    setBuffers((current) => withBuffer(current, sourceLanguage, { ...current[sourceLanguage], input: text }));
   }
 
   async function runTranslation() {
@@ -134,17 +199,35 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
     lastToastId.current = toastId;
     setAnnouncement("Translating…");
     const retry = { label: "Try again", onClick: () => void runLatest.current() };
+    // The request's own inputs: the response is written back against these, never against whatever
+    // the pickers and textareas say by the time it lands.
+    const sent = { text: sourceText, context, source: sourceLanguage, target: targetLanguage };
     try {
       const { data } = await translate({
         variables: {
-          input: { sourceText, sourceLanguage, targetLanguage, context: context.trim() === "" ? null : context },
+          input: {
+            sourceText: sent.text,
+            sourceLanguage: sent.source,
+            targetLanguage: sent.target,
+            context: sent.context.trim() === "" ? null : sent.context,
+          },
         },
       });
       if (!mounted.current) return;
       const payload = data?.translate;
       const error = payload?.errors[0];
       if (payload?.translation) {
-        setTranslation({ ...payload.translation, fromText: sourceText, fromContext: context });
+        const result = payload.translation;
+        setTranslation({ ...result, fromText: sent.text, fromContext: sent.context });
+        // Throw out the dirty buffers on both sides of the pair: after a response both languages
+        // are clean, so an immediate swap hands back an editable copy of the translation with the
+        // text it came from waiting in the other pane. The third language keeps what it held.
+        setBuffers((current) =>
+          withBuffer(withBuffer(current, sent.source, { input: sent.text, target: sent.text }), sent.target, {
+            input: result.text,
+            target: result.text,
+          }),
+        );
         setAnnouncement("Translation ready.");
       } else if (error !== undefined) {
         // Typed, anticipated failures (design D3.3): one message per code. Try again is offered
@@ -181,21 +264,25 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
     <div className="min-h-screen bg-canvas text-ink">
       <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
         <h1 className="text-base font-semibold tracking-tight">Contextual Translate</h1>
-        <div className="flex items-center gap-3 text-sm text-muted">
-          <span>{viewer.accessCodeLabel}</span>
-          <button type="button" onClick={onSignOut} className="rounded-md px-2 py-1 hover:bg-surface hover:text-ink">
-            Sign out
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="rounded-md px-2 py-1 text-sm text-muted hover:bg-surface hover:text-ink"
+        >
+          Sign out
+        </button>
       </header>
 
       <main className="mx-auto max-w-6xl px-6 pb-16" onKeyDown={handleShortcut}>
         <section className="overflow-hidden rounded-xl border border-line" aria-label="Translation">
-          <div className="grid grid-cols-1 border-b border-line md:grid-cols-[1fr_auto_1fr]">
-            <div className="flex items-center px-3 py-2">
+          {/* One row at every width, phones included: minmax(0,1fr) lets the two picker cells
+              shrink past their text (a bare 1fr floors at its content and would overflow ~360px),
+              and the equal side columns leave the swap button dead centre between them. */}
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] border-b border-line">
+            <div className="flex min-w-0 items-center px-3 py-2">
               <LanguageSelect label="Source language" value={sourceLanguage} onChange={chooseSource} />
             </div>
-            <div className="flex items-center justify-center border-y border-line px-2 md:border-y-0">
+            <div className="flex items-center justify-center px-2">
               <button
                 type="button"
                 onClick={swap}
@@ -207,7 +294,7 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
                 ⇄
               </button>
             </div>
-            <div className="flex items-center px-3 py-2">
+            <div className="flex min-w-0 items-center px-3 py-2">
               <LanguageSelect label="Target language" value={targetLanguage} onChange={chooseTarget} />
             </div>
           </div>
@@ -219,11 +306,12 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
               </label>
               <textarea
                 id={sourceId}
+                ref={sourceRef}
                 value={sourceText}
-                onChange={(event) => setSourceText(event.target.value)}
+                onChange={(event) => editSource(event.target.value)}
                 aria-invalid={sourceTooLong}
                 placeholder="Type or paste text…"
-                className="block min-h-72 w-full resize-y bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60 focus:outline-none"
+                className="block min-h-72 w-full resize-none overflow-hidden bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60 focus:outline-none"
               />
               <p className={`px-5 pb-3 text-right text-xs ${sourceTooLong ? "text-danger" : "text-muted"}`}>
                 {sourceTooLong && "Too long to translate — "}
@@ -232,26 +320,31 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
             </div>
 
             <div
-              className={`min-h-72 border-t border-line bg-surface/60 px-5 py-4 md:border-t-0 ${stale ? "opacity-60" : ""}`}
+              className={`min-h-72 border-t border-line bg-frame px-5 py-4 md:border-t-0 ${stale ? "opacity-60" : ""}`}
               aria-label="Translation result"
               aria-busy={loading}
               role="region"
             >
               {loading ? (
+                // bg-line would vanish against the frame; a wash of ink keeps the bars readable there.
                 <div className="space-y-3" aria-hidden>
-                  <div className="h-5 w-3/4 animate-pulse rounded bg-line" />
-                  <div className="h-5 w-1/2 animate-pulse rounded bg-line" />
-                  <div className="h-5 w-2/3 animate-pulse rounded bg-line" />
+                  <div className="h-5 w-3/4 animate-pulse rounded bg-ink/10" />
+                  <div className="h-5 w-1/2 animate-pulse rounded bg-ink/10" />
+                  <div className="h-5 w-2/3 animate-pulse rounded bg-ink/10" />
                 </div>
-              ) : translation === null ? (
-                <p className="text-lg text-muted/70">Translation</p>
+              ) : resultText === "" ? (
+                <p className="text-lg text-frame-muted">Translation</p>
               ) : (
                 <>
-                  <p className="whitespace-pre-wrap text-lg leading-relaxed">{translation.text}</p>
-                  {translation.notes && (
-                    <p className="mt-4 border-t border-line pt-3 text-sm text-muted">
+                  {/* Ruby needs room above each line for the readings, so annotated text gets
+                      looser leading than the plain paragraph, which keeps its usual rhythm. */}
+                  <p className={`whitespace-pre-wrap text-lg ${responseFurigana === null ? "leading-relaxed" : "leading-loose"}`}>
+                    {responseFurigana === null ? resultText : rubyText(responseFurigana)}
+                  </p>
+                  {responseNotes && (
+                    <p className="mt-4 border-t border-ink/10 pt-3 text-sm text-frame-muted">
                       <span className="font-medium text-ink/80">Note: </span>
-                      {translation.notes}
+                      {responseNotes}
                     </p>
                   )}
                 </>
@@ -270,12 +363,13 @@ export function TranslatePage({ viewer, onSignOut }: Props) {
           </p>
           <textarea
             id={contextId}
+            ref={contextRef}
             value={context}
             onChange={(event) => setContext(event.target.value)}
             aria-invalid={contextTooLong}
             rows={3}
             placeholder="Describe the situation, formality or region…"
-            className="mt-2 block w-full resize-y rounded-lg border border-line bg-canvas px-4 py-3 text-sm leading-relaxed placeholder:text-muted/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
+            className="mt-2 block min-h-24 w-full resize-none overflow-hidden rounded-lg border border-line bg-canvas px-4 py-3 text-sm leading-relaxed placeholder:text-muted/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
           />
           {contextTooLong && (
             <p className="mt-1 text-xs text-danger">

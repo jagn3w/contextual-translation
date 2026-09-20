@@ -6,7 +6,7 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
   MUTATION = <<~GRAPHQL
     mutation Translate($input: TranslateInput!) {
       translate(input: $input) {
-        translation { text notes sourceLanguage targetLanguage }
+        translation { text notes furigana sourceLanguage targetLanguage }
         errors { code message retryable retryAfterSeconds }
       }
     }
@@ -34,6 +34,7 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
         "translation" => {
           "text" => "[ES] Is this a bat?",
           "notes" => "Fake translation using context: Baseball game",
+          "furigana" => nil,
           "sourceLanguage" => "EN",
           "targetLanguage" => "ES"
         },
@@ -41,6 +42,14 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
       },
       body.dig("data", "translate")
     )
+  end
+
+  test "a Japanese target exposes furigana" do
+    translation = graphql(MUTATION, variables: { input: INPUT.merge(targetLanguage: "JA") })
+      .dig("data", "translate", "translation")
+
+    assert_equal "[JA] Is this a bat?", translation["text"]
+    assert_equal "[JA]《ジェイエー》 Is this a bat?", translation["furigana"]
   end
 
   test "anticipated failures come back as typed errors" do

@@ -24,6 +24,7 @@ module Mutations
         translation: {
           text: result.text,
           notes: result.notes,
+          furigana: result.furigana,
           source_language: request.source_language,
           target_language: request.target_language
         },

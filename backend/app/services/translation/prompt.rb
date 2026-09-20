@@ -33,11 +33,20 @@ module Translation
       - Keep the original's structure: paragraphs, line breaks, lists and punctuation style.
       - Keep names, numbers, URLs and code as they are unless the target language conventionally
         changes them.
+      - In Japanese, write each word with the kanji it would normally carry in written
+        communication rather than spelling it out in kana; keep in kana what is conventionally
+        kana — okurigana, auxiliaries and words usually written in hiragana (ある, いる, こと,
+        ください).
       - Do not add explanations to the translation itself.
 
-      In "notes", write one or two short sentences in English for the person who asked: which
-      meaning you chose for anything ambiguous and why, and which formality and regional variety
-      you used. Use an empty string only if there is truly nothing worth noting.
+      In "notes", write one or two short sentences in the source text's language for the person
+      who asked: which meaning you chose for anything ambiguous and why, and which formality and
+      regional variety you used. Use an empty string only if there is truly nothing worth noting.
+
+      In "furigana", repeat the translation exactly, adding the reading of each run of kanji in
+      double angle brackets straight after it: 漢字《かんじ》を書《か》く. Removing every 《…》
+      group must give back the translation character for character — change nothing else. Use an
+      empty string when the target language is not Japanese, or when the translation has no kanji.
     PROMPT
 
     OUTPUT_SCHEMA = T.let(
@@ -45,9 +54,16 @@ module Translation
         type: "object",
         properties: {
           translation: { type: "string", description: "The translated text." },
-          notes: { type: "string", description: "Short notes on meaning, formality and region choices." }
+          notes: { type: "string", description: "Short notes on meaning, formality and region choices." },
+          furigana: {
+            type: "string",
+            description: "The translated text repeated verbatim, with the reading of each run of kanji " \
+                         "in double angle brackets after it (漢字《かんじ》). Removing every 《…》 group " \
+                         "must yield the translation character for character. Empty string when the " \
+                         "target language is not Japanese or the translation has no kanji."
+          }
         },
-        required: %w[translation notes],
+        required: %w[translation notes furigana],
         additionalProperties: false
       }.freeze,
       T::Hash[Symbol, T.untyped]
