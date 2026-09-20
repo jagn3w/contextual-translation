@@ -33,6 +33,7 @@ module Mutations
           furigana: result.furigana,
           glosses: result.glosses,
           glosses_truncated: result.glosses_truncated,
+          readings_omitted: result.readings_omitted,
           source_language: request.source_language,
           target_language: request.target_language
         },

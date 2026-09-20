@@ -25,26 +25,21 @@ const KANJI_RUN = new RegExp(`${KANJI.source}+$`, "u");
 /** A reading group. The reading itself never contains a bracket, so it can't swallow the next one. */
 const READING_GROUP = /《([^《》]*)》/gu;
 
-/** The last character of `text` as a user sees it, keeping an astral character's two units together. */
-function trailingCharacter(text: string): string {
-  const unit = text.charCodeAt(text.length - 1);
-  return unit >= 0xdc00 && unit <= 0xdfff && text.length >= 2 ? text.slice(-2) : text.slice(-1);
-}
-
 /**
- * The base a reading belongs to: the maximal run of kanji that ends `pending`, or — when the
- * group doesn't follow kanji at all — the single character before it. The fallback is what makes
- * the fake translator's "[JA]《ジェイエー》" (design D2.4) render as a ruby over "]" rather than
- * dropping the reading, and it costs nothing for real output, where a group always follows kanji.
- * Empty when nothing usable precedes the group: the start of the string, whitespace, or another
- * group's base, which already carries a reading of its own.
+ * The base a reading belongs to: the maximal run of kanji that ends `pending`, and nothing else.
+ * Empty when the group follows anything but kanji — the start of the string, kana, punctuation,
+ * whitespace, or another group's base, which already carries a reading of its own — and the
+ * reading is then dropped.
+ *
+ * Dropped rather than written over whatever character happens to precede it, because the backend
+ * guarantees only that stripping every 《…》 group reproduces the translation
+ * (`ClaudeTranslator#furigana_from`); nothing there says a group sits after kanji. A reading
+ * measured against a word it isn't over is a lie in the one pane people are reading Japanese out
+ * of — お願い《おねがい》します would put おねがい over い — and a missing reading is only a gap.
+ * This is the rule `annotateTranslation` already applies to a base a gloss cut in two.
  */
 function baseOf(pending: string): string {
-  const kanji = KANJI_RUN.exec(pending);
-  if (kanji !== null) return kanji[0];
-  if (pending === "") return "";
-  const last = trailingCharacter(pending);
-  return /\s/u.test(last) ? "" : last;
+  return KANJI_RUN.exec(pending)?.[0] ?? "";
 }
 
 /**

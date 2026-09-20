@@ -64,7 +64,21 @@ module TranslationEval
       status = failures.empty? ? "PASS" : "FAIL"
       @io.puts format("%-4s %5.1fs  %-22s %s", status, seconds, eval_case.id, result&.text.to_s.tr("\n", " "))
       @io.puts "             notes: #{result.notes}" if result&.notes
+      @io.puts "             #{annotations(result)}" if result
       failures.each { |failure| @io.puts "             ! #{failure}" }
+    end
+
+    # What the reply cost besides the translation, so a long case shows whether the readings and
+    # the full gloss list survived the limits or were degraded away (Translation::Prompt).
+    sig { params(result: Translation::Result).returns(String) }
+    def annotations(result)
+      furigana = result.furigana
+      readings =
+        if result.readings_omitted then "furigana omitted (source over the limit)"
+        elsif furigana then "furigana #{furigana.length} chars"
+        else "no furigana"
+        end
+      "#{readings}, glosses #{result.glosses.size}#{result.glosses_truncated ? ' (capped)' : ''}"
     end
 
     sig { params(outcomes: T::Array[Outcome]).void }

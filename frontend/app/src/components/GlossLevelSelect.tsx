@@ -6,21 +6,22 @@ type Props = {
   onChange: (level: GlossLevel) => void;
 };
 
-type Option = { level: GlossLevel; name: string };
-
 /**
  * How much of the translation gets a definition (design D2.3), in the order a reader steps through
  * it — off, the default, everything.
+ *
+ * A `Record` over the enum rather than a hand-kept list: a fourth GlossLevel is then a compile
+ * error here instead of an option nobody can pick, labelled with its raw code. That is the
+ * exhaustiveness design D3.3 asks of TranslateErrorCode, and `T.absurd` gives the backend.
  */
-const LEVELS: ReadonlyArray<Option> = [
-  { level: "NONE", name: "None" },
-  { level: "NOTABLE", name: "Notable" },
-  { level: "EVERY", name: "All" },
-];
+const LEVEL_NAMES: Record<GlossLevel, string> = {
+  NONE: "None",
+  NOTABLE: "Notable",
+  EVERY: "All",
+};
 
-function levelName(level: GlossLevel): string {
-  return LEVELS.find((option) => option.level === level)?.name ?? level;
-}
+/** The same names as the picker's options, in the order written above — which is picker order. */
+const LEVELS = Object.entries(LEVEL_NAMES) as ReadonlyArray<[GlossLevel, string]>;
 
 /**
  * The picker for which words in the translation carry a hoverable definition. It sits on the
@@ -43,7 +44,7 @@ export function GlossLevelSelect({ value, onChange }: Props) {
         className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted hover:bg-surface hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
       >
         <Select.Value asChild>
-          <span className="truncate">Definitions: {levelName(value)}</span>
+          <span className="truncate">Definitions: {LEVEL_NAMES[value]}</span>
         </Select.Value>
         <Select.Icon className="shrink-0" aria-hidden>
           ▾
@@ -56,13 +57,13 @@ export function GlossLevelSelect({ value, onChange }: Props) {
           className="z-50 min-w-40 overflow-hidden rounded-lg border border-line bg-canvas p-1 shadow-lg"
         >
           <Select.Viewport>
-            {LEVELS.map((option) => (
+            {LEVELS.map(([level, name]) => (
               <Select.Item
-                key={option.level}
-                value={option.level}
+                key={level}
+                value={level}
                 className="flex cursor-default select-none items-center rounded-md px-2 py-1.5 text-xs text-ink outline-none data-[highlighted]:bg-surface data-[state=checked]:font-medium"
               >
-                <Select.ItemText>{option.name}</Select.ItemText>
+                <Select.ItemText>{name}</Select.ItemText>
               </Select.Item>
             ))}
           </Select.Viewport>

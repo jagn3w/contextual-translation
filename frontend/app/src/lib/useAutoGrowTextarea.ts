@@ -23,11 +23,24 @@ export function useAutoGrowTextarea(value: string): RefObject<HTMLTextAreaElemen
   // Layout effect, not effect: the resize lands in the same frame as the new text, so no flicker.
   useLayoutEffect(fit, [fit, value]);
 
-  // A narrower window rewraps the same text into more lines. Nothing else would re-measure until
-  // the next keystroke, and with the scrollbar gone that stale height would clip text for good.
+  // A narrower box rewraps the same text into more lines. Nothing else would re-measure until the
+  // next keystroke, and with no scrollbar and no resize handle that stale height clips the text
+  // for good. The observer watches the element rather than the window because the window is not
+  // where every narrowing comes from: the document's scrollbar appearing takes ~15px off the
+  // column and fires no resize event at all, which the window listener this replaces missed
+  // entirely. Watching the box covers that, the md breakpoint and zoom under one rule.
+  //
+  // `fit` writes the height, which the observer then reports; that pass measures the same content
+  // height and writes the same value, so no third pass is scheduled — the callback settles rather
+  // than looping, because the box is always collapsed to `auto` before it is measured.
   useEffect(() => {
-    window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
+    const textarea = ref.current;
+    // jsdom implements no ResizeObserver, and lays out nothing for one to report: there `fit`
+    // takes its `scrollHeight === 0` path, so there is no measurement to keep current anyway.
+    if (textarea === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(textarea);
+    return () => observer.disconnect();
   }, [fit]);
 
   return ref;

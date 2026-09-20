@@ -16,6 +16,10 @@ module Types
     field :glosses_truncated, Boolean, null: false,
       description: "True when Claude offered more glosses than the cap allows and the extras were dropped, so " \
                    "`glosses` runs out before the end of `text`. False when `glosses` is everything there was."
+    field :readings_omitted, Boolean, null: false,
+      description: "True when the source was too long for kana readings to be asked for at all, so `furigana` " \
+                   "is null because the request gave the readings up rather than because `text` has no kanji. " \
+                   "False for every target but Japanese, where readings are not expected in the first place."
     field :source_language, Types::LanguageType, null: false
     field :target_language, Types::LanguageType, null: false
   end

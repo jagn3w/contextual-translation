@@ -9,12 +9,33 @@ class TranslationEvalTest < ActiveSupport::TestCase
     cases = TranslationEval::EvalCase.load_file(CASES_PATH)
 
     assert_operator cases.size, :>=, 15
-    assert_equal %w[ambiguity formality region safety], cases.map(&:category).uniq.sort
+    assert_equal %w[ambiguity formality length region safety], cases.map(&:category).uniq.sort
     languages = cases.flat_map { |c| [ c.request.source_language, c.request.target_language ] }.uniq
     assert_equal Translation::Language.values.sort_by(&:serialize), languages.sort_by(&:serialize)
     cases.each do |eval_case|
       assert_not_equal eval_case.request.source_language, eval_case.request.target_language, eval_case.id
     end
+  end
+
+  test "a case can choose a gloss level, and leaves it at the Request default when it doesn't" do
+    cases = TranslationEval::EvalCase.load_file(CASES_PATH).index_by(&:id)
+
+    assert_equal Translation::GlossLevel::EVERY, cases.fetch("notice-long-ja").request.gloss_level
+    assert_equal Translation::GlossLevel::NOTABLE, cases.fetch("bat-baseball-es").request.gloss_level
+  end
+
+  test "a long Japanese case exists, so the cost the furigana limit guesses at can be measured" do
+    # The limit's comment points at this run. Without a case whose source is long enough to be
+    # worth timing, and whose target is the language furigana costs anything in, it pointed at a
+    # measurement the runner could not take.
+    long = TranslationEval::EvalCase.load_file(CASES_PATH)
+      .select { |eval_case| eval_case.request.target_language == Translation::Language::JA }
+      .max_by { |eval_case| eval_case.request.source_text.length }
+
+    assert_operator T.must(long).request.source_text.length, :>, Translation::Prompt::FURIGANA_LIMIT * 0.9
+    assert_operator T.must(long).request.source_text.length, :<=, Translation::Prompt::FURIGANA_LIMIT,
+      "the worst annotated reply is the one at the limit, so the case has to still ask for readings"
+    assert_equal Translation::GlossLevel::EVERY, T.must(long).request.gloss_level
   end
 
   test "grading requires one expected pattern and no rejected ones" do

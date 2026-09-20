@@ -3,7 +3,12 @@
 # heuristics, good enough to catch the wrong meaning, formality or regional variety; read the
 # printed output for the full picture. Run with: bin/rails eval:translations
 #
-# Categories: ambiguity (meaning depends on context), formality, region, safety.
+# Categories: ambiguity (meaning depends on context), formality, region, safety, and length —
+# a case that exists to be timed rather than graded, because what a long reply costs is a
+# measurement the grader cannot make.
+#
+# `gloss_level` (none, notable, every) is optional and defaults to notable; a case sets it only
+# when how much of the translation gets glossed is part of what the case is measuring.
 
 - id: bat-baseball-es
   category: ambiguity
@@ -166,3 +171,52 @@
   context: Said to a coworker at the end of a long workday at the office.
   expect_any: ["buen trabajo", "gracias por", "descans", "hasta ma[nñ]ana", "buen d[ií]a", "cansad", "esfuerzo"]
   reject: []
+
+# A long source, there to be measured rather than graded: just inside
+# Translation::Prompt::FURIGANA_LIMIT, so the reply carries the furigana as well as the
+# translation, and with every word glossed on top of that — the costliest reply that still
+# carries readings, which is the case that limit exists to bound. What to read from it is the
+# seconds the runner prints.
+- id: notice-long-ja
+  category: length
+  from: en
+  to: ja
+  gloss_level: every
+  text: |
+    Dear colleagues,
+
+    Our Tokyo office moves to the new building in Shinagawa over the weekend of 14-15 March, and I
+    want to set out what that means for everyone before the packing starts.
+
+    Please empty your desk by 18:00 on Friday 13 March. Crates will be delivered to each floor on
+    Wednesday morning; label yours with the sticker that matches your new floor, and leave anything
+    you no longer need beside the recycling point rather than in the crate. The facilities team
+    cannot move personal furniture, plants taller than one metre, or equipment that the company did
+    not issue, so please take those home in advance.
+
+    Network and telephone services will be switched off from 19:00 on Friday until roughly 09:00 on
+    Monday. Laptops will keep working, but shared drives, printers and the meeting room booking
+    system will be unavailable for that whole period. If you are on call over the weekend, speak to
+    your manager this week so that we can arrange a temporary line for you.
+
+    The new floor plan is not the one you know: teams sit together in neighbourhoods rather than at
+    fixed desks, and the quiet rooms are bookable by the hour. A short guide to the building, with
+    the nearest entrances from the station and the bicycle parking, goes out on Thursday together
+    with your access card.
+
+    Deliveries addressed to the old building will be redirected for two weeks only, so please tell
+    any supplier that sends parcels to us. Visitors booked for the week of the move should be given
+    the new address when you confirm, and the reception desk in Shinagawa opens at 08:30.
+
+    Access cards for the old building stop working at the end of the month. Please return yours to
+    reception on your last day there, along with any keys for cabinets you have been using.
+
+    We know that a move is disruptive, and we are grateful for your patience. If anything here is
+    unclear, or if you need help we have not thought of, reply to this message and the facilities
+    team will answer within one working day.
+
+    Thank you,
+    Facilities
+  context: A notice emailed to everyone at the Tokyo office by the facilities team.
+  expect_any: ["移転", "引[っ]?越"]
+  reject: ["\\bplease\\b", "\\bFriday\\b"]

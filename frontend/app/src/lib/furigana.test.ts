@@ -57,13 +57,12 @@ describe("parseFurigana", () => {
     expect(parseFurigana("一ヵ月《いっかげつ》")).toEqual([{ text: "一ヵ月", reading: "いっかげつ" }]);
   });
 
-  it("falls back to the single character before a group that doesn't follow kanji", () => {
-    // The fake translator used in development and backend tests (design D2.4) annotates its tag.
-    expect(parseFurigana("[JA]《ジェイエー》 Hello")).toEqual([
-      { text: "[JA" },
-      { text: "]", reading: "ジェイエー" },
-      { text: " Hello" },
-    ]);
+  it("drops a reading that doesn't follow kanji rather than writing it over the wrong base", () => {
+    // The backend guarantees only that stripping the groups reproduces the translation, never
+    // where a group sits. Over the character before it, おねがい would be written over い alone —
+    // wrong, in the pane someone is reading the Japanese out of, where a gap is merely a gap.
+    expect(parseFurigana("お願い《おねがい》します")).toEqual([{ text: "お願いします" }]);
+    expect(parseFurigana("[JA]《ジェイエー》 Hello")).toEqual([{ text: "[JA] Hello" }]);
   });
 
   it("drops a reading with nothing usable in front of it", () => {

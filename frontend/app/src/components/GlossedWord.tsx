@@ -94,12 +94,25 @@ export function GlossedWord({ gloss, children }: Props) {
                 already hands a button the surrounding type and a transparent background; what is
                 left of the control — its platform appearance, its centred text and its
                 unselectable label — is undone here, so the only affordance is the dotted underline
-                (and the ring, for the keyboard). */}
+                (and the ring, for the keyboard).
+
+                That underline is the sole mark saying this word has a definition, which makes it a
+                non-text UI indicator under WCAG 1.4.11 and puts it to a 3:1 minimum against the
+                ground behind it. At 80% --color-frame-muted composites to 4.0:1 on --color-frame
+                and 3.7:1 on --color-frame-stale, clear on both; the /50 it replaces was 2.2:1 and
+                2.1:1, the only new affordance on this branch to skip the check index.css records
+                for its other tokens.
+
+                `aria-label` because the accessible name would otherwise be the text content, and
+                for Japanese that folds each `<rt>` in: "天気てんき, button". `select-none` styles
+                the readings out of a copy but says nothing about the name. The word alone is the
+                name; the reading is on the card, which shows it beside the word. */}
             <button
               type="button"
+              aria-label={gloss.text}
               onPointerDown={handlePointerDown}
               onPointerUp={handlePointerUp}
-              className="inline cursor-help select-text appearance-none rounded-[2px] text-left underline decoration-frame-muted/50 decoration-dotted underline-offset-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              className="inline cursor-help select-text appearance-none rounded-[2px] text-left underline decoration-frame-muted/80 decoration-dotted underline-offset-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             >
               {children}
             </button>

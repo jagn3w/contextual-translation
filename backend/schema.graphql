@@ -225,6 +225,14 @@ type Translation {
   Claude's note on the meaning, formality and regional variety it chose.
   """
   notes: String
+
+  """
+  True when the source was too long for kana readings to be asked for at all, so
+  `furigana` is null because the request gave the readings up rather than
+  because `text` has no kanji. False for every target but Japanese, where
+  readings are not expected in the first place.
+  """
+  readingsOmitted: Boolean!
   sourceLanguage: Language!
   targetLanguage: Language!
   text: String!

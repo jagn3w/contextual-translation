@@ -194,6 +194,24 @@ export function TranslatePage({ onSignOut }: Props) {
   // Claude stopped glossing before the translation ended, so the reader is told rather than left
   // to conclude the untouched half of the sentence held nothing worth defining.
   const glossesTruncated = showingResponseOutput && translation.glossesTruncated;
+  // The readings were never asked for, because the source was past the length the backend will
+  // annotate (design D2.3). Same reason to say so: with nothing on screen to distinguish it, a
+  // pane of bare Japanese reads as "Claude found no kanji here" rather than "you didn't get this
+  // part" — and the definitions, which the length switch leaves alone, are still there implying
+  // the answer was annotated. Both flags ride on `showingResponseOutput`, so neither can end up
+  // describing a response the pane has stopped showing.
+  const readingsOmitted = showingResponseOutput && translation.readingsOmitted;
+  // What this answer didn't carry, in one paragraph rather than a stack of notices. The two have
+  // different causes — the source's length for the readings, a per-answer cap on entries for the
+  // definitions — so they stay separate sentences instead of being merged into one claim, but
+  // they are one thing to tell the reader: this is annotated less than the pane implies.
+  const shortfalls: string[] = [];
+  if (readingsOmitted) shortfalls.push("The text was too long to ask for kana readings, so this translation has none.");
+  if (glossesTruncated) {
+    shortfalls.push(
+      `Definitions stop partway: ${responseGlosses.length} words are defined and the rest of the translation is not.`,
+    );
+  }
   // Null when there is nothing to annotate, which keeps the plain, un-wrapped text node the pane
   // has always rendered for a response with neither readings nor glosses.
   const annotated = useMemo(
@@ -242,8 +260,17 @@ export function TranslatePage({ onSignOut }: Props) {
     setAnnouncement("Translating…");
     const retry = { label: "Try again", onClick: () => void runLatest.current() };
     // The request's own inputs: the response is written back against these, never against whatever
-    // the pickers and textareas say by the time it lands.
-    const sent = { text: sourceText, context, source: sourceLanguage, target: targetLanguage, glossLevel };
+    // the pickers and textareas say by the time it lands. `targetInput` is not sent anywhere — it
+    // is what the target language's own box held as the request went out, which is what lets the
+    // write-back below tell an old draft it may replace from one typed since (see there).
+    const sent = {
+      text: sourceText,
+      context,
+      source: sourceLanguage,
+      target: targetLanguage,
+      glossLevel,
+      targetInput: buffers[targetLanguage].input,
+    };
     try {
       const { data } = await translate({
         variables: {
@@ -279,12 +306,22 @@ export function TranslatePage({ onSignOut }: Props) {
           // <textarea> being controlled. The result then reads as out of date beside the draft,
           // which is precisely what it is. So: never overwrite a changed source box.
           //
+          // The same rule on the far side, which needs the test spelled out because that box is
+          // usually — not always — the read-only pane. The language pickers stay live for the
+          // whole call (only the swap and submit buttons go disabled), so choosing the target
+          // language as the source swaps the pair mid-flight and makes that very box the editable
+          // one; whatever is typed there is a draft with no undo, exactly like the source's. So
+          // `input` is replaced only when it still holds what it held when the request went out.
+          // That still throws out an *old* target-language draft, which is the intended reset —
+          // it is only text typed since the request that is protected. The result then reads as
+          // out of date beside the draft, `stale` keying on the pane's text rather than on this.
+          //
           // `target` is not a draft but a record of the text of this language Claude has now seen,
-          // and the far side keeps its unconditional write of both: that pane is read-only, so
-          // nothing can have been typed into it while the request was in flight.
+          // so it is written on both sides unconditionally.
           const source = current[sent.source];
+          const target = current[sent.target];
           return withBuffer(withBuffer(current, sent.source, { input: source.input, target: sent.text }), sent.target, {
-            input: result.text,
+            input: target.input === sent.targetInput ? result.text : target.input,
             target: result.text,
           });
         });
@@ -428,10 +465,13 @@ export function TranslatePage({ onSignOut }: Props) {
                             ),
                           )}
                     </p>
-                    {glossesTruncated && (
-                      <p className="mt-4 text-xs text-frame-muted">
-                        Definitions stop partway: this translation has more words than one response can carry.
-                      </p>
+                    {/* What ran out for the definitions is a fixed cap on how many one answer may
+                        carry, not room in the answer and not the length of the translation, so the
+                        message says how many arrived and stops there. The number is counted from
+                        the response in hand rather than copied from the backend's cap, which would
+                        be a second constant on this side of the boundary, free to drift. */}
+                    {shortfalls.length > 0 && (
+                      <p className="mt-4 text-xs text-frame-muted">{shortfalls.join(" ")}</p>
                     )}
                     {responseNotes && (
                       <p className="mt-4 border-t border-ink/10 pt-3 text-sm text-frame-muted">

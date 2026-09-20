@@ -10,19 +10,20 @@ module Translation
 
     DEFAULT_MODEL = "claude-opus-5"
     DEFAULT_EFFORT = "medium"
-    # The output budget for one reply. The reply is the translation, plus — when the source is
-    # short enough to annotate (Prompt::ANNOTATION_LIMIT) — the furigana, which is the translation
-    # over again with readings at ~1.6x its length, plus up to Prompt::MAX_GLOSSES gloss entries,
-    # plus the notes. Counting a Japanese character as ~1 token, the two worst cases are:
-    #   annotated, at the 2,000-character annotation limit:
+    # The output budget for one reply. The reply is the translation, plus up to
+    # Prompt::MAX_GLOSSES gloss entries whatever the source's length, plus — when the source is
+    # short enough for readings (Prompt::FURIGANA_LIMIT) — the furigana, which is the translation
+    # over again with readings at ~1.6x its length, plus the notes. Counting a Japanese character
+    # as ~1 token, the two worst cases are:
+    #   with readings, at the 2,000-character furigana limit:
     #     2,000 (translation) + 3,200 (1.6 x furigana) + 40 x ~60 chars (glosses) + ~100 (notes)
     #     ≈ 7,700 tokens
-    #   unannotated, at the 10,000-character source limit (Service::MAX_SOURCE_LENGTH):
-    #     10,000 (translation) + ~100 (notes) ≈ 10,100 tokens
-    # 32,000 is the larger of the two roughly tripled, which leaves room for JSON escaping and for
-    # the kanji that cost more than a token each. It is a ceiling, not a target: the reply still
-    # has to arrive inside the 30 s SDK timeout and the 55 s deadline, and keeping it inside those
-    # is Prompt::ANNOTATION_LIMIT's job, not this number's (design D2.2).
+    #   without, at the 10,000-character source limit (Service::MAX_SOURCE_LENGTH):
+    #     10,000 (translation) + 2,400 (glosses) + ~100 (notes) ≈ 12,500 tokens
+    # 32,000 is the larger of the two about two and a half times over, which leaves room for JSON
+    # escaping and for the kanji that cost more than a token each. It is a ceiling, not a target:
+    # the reply still has to arrive inside the 30 s SDK timeout and the 55 s deadline, and keeping
+    # it inside those is Prompt::FURIGANA_LIMIT's job, not this number's (design D2.2).
     MAX_TOKENS = 32_000
     # Server-side refusal fallbacks: if the model declines, Anthropic retries on a substitute
     # model chosen by refusal category.
@@ -201,22 +202,26 @@ module Translation
 
       fields = T.cast(parsed, T::Hash[String, T.untyped])
       notes = fields["notes"]
-      glosses, glosses_truncated = glosses_from(fields["glosses"], translation, request)
-      Result.new(
-        text: translation, notes: notes.is_a?(String) ? notes.presence : nil,
-        furigana: furigana_from(fields["furigana"], translation, request),
-        glosses:, glosses_truncated:, model: message.model.to_s
+      located = glosses_from(fields["glosses"], translation, request)
+      # Result.for_request applies the cap and the furigana gate, so what it returns — not what
+      # was located above — is what the reader gets, and what the log below has to count against.
+      result = Result.for_request(
+        request:, text: translation, notes: notes.is_a?(String) ? notes.presence : nil,
+        furigana: furigana_from(fields["furigana"], translation),
+        glosses: located, model: message.model.to_s
       )
+      log_gloss_loss(fields["glosses"], located, result, request)
+      result
     end
 
     # Furigana is only useful if it is the translation with readings added, so check it rather
     # than trust it: strip every 《…》 group and the translation must come back character for
-    # character. Anything else (a non-Japanese target, an empty or reworded string, no readings
-    # at all) becomes nil and the UI shows plain text.
-    sig { params(value: T.untyped, translation: String, request: Request).returns(T.nilable(String)) }
-    def furigana_from(value, translation, request)
-      return nil unless Prompt.annotations?(request)
-      return nil unless request.target_language == Language::JA
+    # character. Anything else (an empty or reworded string, no readings at all) becomes nil and
+    # the UI shows plain text. Whether readings were wanted for this request at all — a Japanese
+    # target, a source inside Prompt::FURIGANA_LIMIT — is Result.for_request's question, asked of
+    # every translator rather than of this one.
+    sig { params(value: T.untyped, translation: String).returns(T.nilable(String)) }
+    def furigana_from(value, translation)
       return nil unless value.is_a?(String) && value.match?(FURIGANA_READING)
       return value if value.gsub(FURIGANA_READING, "") == translation
 
@@ -232,46 +237,38 @@ module Translation
     # and the spans in order and non-overlapping. Entries that don't fit — not a string, not in
     # the translation any more, no meaning — are dropped one by one; a malformed list is simply
     # no glosses. The translation still comes back either way: hover definitions are a bonus.
-    # Returns the glosses and whether the cap threw any away, which the UI says out loud: a
-    # reader whose definitions stop half way through the translation should know they were cut
-    # off rather than think the rest was not worth glossing.
-    sig do
-      params(value: T.untyped, translation: String, request: Request)
-        .returns([ T::Array[Gloss], T::Boolean ])
-    end
+    # Returns every entry that could be placed, in order, the ones past the cap included:
+    # Result.for_request is what cuts the list to Prompt::MAX_GLOSSES and tells the reader it was
+    # cut, so this only has to say which entries are usable at all.
+    sig { params(value: T.untyped, translation: String, request: Request).returns(T::Array[Gloss]) }
     def glosses_from(value, translation, request)
-      # The reader asked for none, or the source was too long to annotate at all, so nothing
-      # Claude sent is wanted — don't even look at it.
-      return [ [], false ] if request.gloss_level == GlossLevel::NONE || !Prompt.annotations?(request)
-      return [ [], false ] unless value.is_a?(Array)
+      # The reader asked for none, so nothing Claude sent is wanted — don't even look at it.
+      return [] if request.gloss_level == GlossLevel::NONE
+      return [] unless value.is_a?(Array)
 
       cursor = 0
-      dropped = 0
-      truncated = 0
-      glosses = T.let([], T::Array[Gloss])
-      value.each_with_index do |entry, index|
-        if glosses.size >= Prompt::MAX_GLOSSES
-          # Everything still in the list is over the cap and is being thrown away just as surely
-          # as an entry we couldn't place, so count it: the log said "dropped N" and left these
-          # out, which undercounted the loss every time Claude overran the cap.
-          truncated = value.size - index
-          break
-        end
-
+      value.filter_map do |entry|
         gloss = gloss_from(entry, translation, cursor, request)
-        if gloss.nil?
-          dropped += 1
-          next
-        end
+        next if gloss.nil?
+
         cursor = gloss.starts_at + gloss.length
-        glosses << gloss
+        gloss
       end
-      # Never log the words themselves: they are the user's text (design D4.2).
-      if (lost = dropped + truncated).positive?
-        @logger.debug("Dropped #{lost} of #{value.size} glosses Claude returned " \
-                      "(#{truncated} of them over the #{Prompt::MAX_GLOSSES} cap)")
-      end
-      [ glosses, truncated.positive? ]
+    end
+
+    # What the reader lost, counted against what Claude offered: entries that couldn't be placed
+    # plus the ones the cap threw away. Counting only the unplaceable ones undercounted the loss
+    # every time Claude overran the cap. Never log the words themselves: they are the user's text
+    # (design D4.2).
+    sig { params(value: T.untyped, located: T::Array[Gloss], result: Result, request: Request).void }
+    def log_gloss_loss(value, located, result, request)
+      return if request.gloss_level == GlossLevel::NONE
+      return unless value.is_a?(Array)
+      return unless (lost = value.size - result.glosses.size).positive?
+
+      over_cap = located.size - result.glosses.size
+      @logger.debug("Dropped #{lost} of #{value.size} glosses Claude returned " \
+                    "(#{over_cap} of them over the #{Prompt::MAX_GLOSSES} cap)")
     end
 
     # nil for anything unusable. Offsets count Unicode code points, which is what String#index

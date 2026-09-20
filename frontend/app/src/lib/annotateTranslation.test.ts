@@ -218,7 +218,8 @@ describe("annotateTranslation", () => {
       ["やった🎉ケーキ", null, [gloss("🎉ケーキ", 3)]],
       ["一行目\n\n二行目", "一行目《いちぎょうめ》\n\n二行目《にぎょうめ》", [gloss("二行目", 5)]],
       ["今日は", null, [{ text: "?", reading: null, meaning: "broken", startsAt: 2, length: 9 }]],
-      ["[JA] Hello", "[JA]《ジェイエー》 Hello", [gloss("Hello", 5, "a greeting")]],
+      // The fake translator's tagged output (design D2.4), where the reading follows the kanji.
+      ["[日本語] Hello", "[日本語《にほんご》] Hello", [gloss("Hello", 6, "a greeting")]],
     ];
     for (const [text, furigana, glosses] of cases) {
       expect(plainText(annotateTranslation(text, furigana, glosses))).toBe(text);

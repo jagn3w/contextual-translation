@@ -26,6 +26,7 @@ module TranslationEval
 
     sig { params(entry: T::Hash[String, T.untyped]).returns(EvalCase) }
     def self.from_hash(entry)
+      gloss_level = entry["gloss_level"]
       new(
         id: entry.fetch("id"),
         category: entry.fetch("category"),
@@ -33,7 +34,11 @@ module TranslationEval
           source_text: entry.fetch("text"),
           source_language: Translation::Language.deserialize(entry.fetch("from")),
           target_language: Translation::Language.deserialize(entry.fetch("to")),
-          context: entry["context"].presence
+          context: entry["context"].presence,
+          # Optional in the YAML, and NOTABLE — the Request default — when a case leaves it out:
+          # a case names a level only when the level is what it exists to exercise, such as the
+          # long one that measures what glossing every word of a long translation costs.
+          gloss_level: gloss_level.nil? ? Translation::GlossLevel::NOTABLE : Translation::GlossLevel.deserialize(gloss_level)
         ),
         expect_any: Array(entry["expect_any"]).map { |pattern| Regexp.new(pattern, Regexp::IGNORECASE) },
         reject: Array(entry["reject"]).map { |pattern| Regexp.new(pattern, Regexp::IGNORECASE) }

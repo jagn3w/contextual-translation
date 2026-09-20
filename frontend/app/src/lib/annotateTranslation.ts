@@ -126,13 +126,13 @@ export function annotateTranslation(
   }
 
   // A reading is only right over the base it was measured against, and a segment that carries one
-  // *is* that base: parseFurigana gives it the whole run of kanji before the 《…》 group — or, for
-  // the fake translator's "[JA]《ジェイエー》" (design D2.4), the single character before it. So a
-  // base that came through the span boundaries in one piece therefore keeps its reading, and one
-  // a gloss cut loses it: 東京駅《とうきょうえき》 glossed as 東京 leaves 東京 and 駅, and neither
-  // half reads とうきょうえき. A base is kanji all the way through, so no half of a cut one is
-  // what the reading was measured against and there is nothing to hand it to — and a missing
-  // reading is a gap where a wrong one is a lie, in the pane someone is learning the word from.
+  // *is* that base: parseFurigana gives it the whole run of kanji before the 《…》 group, and
+  // drops the reading outright when there is no such run. A base that came through the span
+  // boundaries in one piece therefore keeps its reading, and one a gloss cut loses it:
+  // 東京駅《とうきょうえき》 glossed as 東京 leaves 東京 and 駅, and neither half reads
+  // とうきょうえき. A base is kanji all the way through, so no half of a cut one is what the
+  // reading was measured against and there is nothing to hand it to — and a missing reading is a
+  // gap where a wrong one is a lie, in the pane someone is learning the word from.
   segments.forEach((segment, index) => {
     const reading = segment.reading;
     if (reading === undefined) return;

@@ -7,7 +7,7 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
     mutation Translate($input: TranslateInput!) {
       translate(input: $input) {
         translation {
-          text notes furigana glossesTruncated sourceLanguage targetLanguage
+          text notes furigana glossesTruncated readingsOmitted sourceLanguage targetLanguage
           glosses { text reading meaning startsAt length }
         }
         errors { code message retryable retryAfterSeconds }
@@ -39,6 +39,7 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
           "notes" => "Fake translation using context: Baseball game",
           "furigana" => nil,
           "glossesTruncated" => false,
+          "readingsOmitted" => false,
           "glosses" => [
             { "text" => "[ES]", "reading" => nil, "meaning" => "fake target-language tag",
               "startsAt" => 0, "length" => 4 },
@@ -58,19 +59,40 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
     translation = graphql(MUTATION, variables: { input: INPUT.merge(targetLanguage: "JA") })
       .dig("data", "translate", "translation")
 
-    assert_equal "[JA] Is this a bat?", translation["text"]
-    assert_equal "[JA]《ジェイエー》 Is this a bat?", translation["furigana"]
+    assert_equal "[日本語] Is this a bat?", translation["text"]
+    assert_equal "[日本語《にほんご》] Is this a bat?", translation["furigana"]
     assert_equal(
-      [ { "text" => "[JA]", "reading" => "ジェイエー", "meaning" => "fake target-language tag",
-          "startsAt" => 0, "length" => 4 },
+      [ { "text" => "[日本語]", "reading" => "にほんご", "meaning" => "fake target-language tag",
+          "startsAt" => 0, "length" => 5 },
         { "text" => "bat?", "reading" => nil, "meaning" => "fake definition of bat?",
-          "startsAt" => 15, "length" => 4 } ],
+          "startsAt" => 16, "length" => 4 } ],
       translation["glosses"]
     )
     translation["glosses"].each do |gloss|
       assert_equal gloss["text"], translation["text"][gloss["startsAt"], gloss["length"]]
     end
-    assert_equal false, translation["glossesTruncated"], "the fake never overruns the cap"
+    assert_equal false, translation["glossesTruncated"], "this source never overruns the cap"
+    assert_equal false, translation["readingsOmitted"], "this source is well inside the furigana limit"
+  end
+
+  test "a source too long for readings says so in readingsOmitted, so the UI need not guess" do
+    long = "Is this a bat? " * 200
+
+    translation = graphql(MUTATION, variables: { input: INPUT.merge(targetLanguage: "JA", sourceText: long) })
+      .dig("data", "translate", "translation")
+
+    assert_operator long.length, :>, Translation::Prompt::FURIGANA_LIMIT
+    assert_nil translation["furigana"]
+    assert_equal true, translation["readingsOmitted"]
+  end
+
+  test "a source too long for readings is no degrade for a Spanish target" do
+    long = "Is this a bat? " * 200
+
+    translation = graphql(MUTATION, variables: { input: INPUT.merge(sourceText: long) })
+      .dig("data", "translate", "translation")
+
+    assert_equal false, translation["readingsOmitted"], "Spanish shows no readings either way"
   end
 
   test "an explicit null glossLevel behaves exactly like an omitted one" do

@@ -24,6 +24,7 @@ function translated(
   furigana: string | null = null,
   glosses: ReturnType<typeof gloss>[] = [],
   glossesTruncated = false,
+  readingsOmitted = false,
 ) {
   return json({
     data: {
@@ -36,6 +37,7 @@ function translated(
           furigana,
           glosses,
           glossesTruncated,
+          readingsOmitted,
           sourceLanguage,
           targetLanguage,
         },
@@ -181,17 +183,90 @@ describe("TranslatePage", () => {
     const result = screen.getByRole("region", { name: "Translation result" });
     expect(await within(result).findByText("Hola")).toBeInTheDocument();
     expect(result.querySelectorAll("ruby")).toHaveLength(0);
+    // Spanish was never going to have readings, so there is nothing missing to report. The flag
+    // is false for every target but Japanese, and the pane stays quiet about it.
+    expect(within(result).queryByText(/kana readings/)).not.toBeInTheDocument();
   });
 
   it("says so when the definitions ran out before the translation did", async () => {
-    server.onGraphql("Translate", () => translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")], true));
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("これ", 0, "This."), gloss("バット", 3, "Baseball bat.")], true),
+    );
     const user = await renderSignedIn();
 
     await user.type(screen.getByLabelText("Text to translate"), "Hello");
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
 
+    // How many definitions arrived, counted from the response in hand. What ran out is a cap on
+    // entries, so the message may not blame the size of the answer or of the translation — and
+    // the count may not be a copy of the backend's constant, free to drift from what came back.
     const result = screen.getByRole("region", { name: "Translation result" });
-    expect(await within(result).findByText(/Definitions stop partway/)).toBeInTheDocument();
+    expect(await within(result).findByText(/2 words are defined and the rest of the translation is not/)).toBeInTheDocument();
+  });
+
+  it("says the readings were dropped for length, not that the text had none to give", async () => {
+    // The length switch is furigana-only: a long source still gets its definitions, so the pane
+    // goes on implying an annotated answer while the readings quietly aren't there. `furigana` is
+    // null either way — the flag is the only thing that separates "too long to ask" from "this
+    // Japanese has no kanji", and only the first is the reader's to know about.
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")], false, true),
+    );
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(
+      await within(result).findByText("The text was too long to ask for kana readings, so this translation has none."),
+    ).toBeInTheDocument();
+    expect(result.querySelectorAll("ruby")).toHaveLength(0);
+    // The definitions survived the length switch, and say nothing about having been cut short.
+    expect(within(result).getByRole("button", { name: "バット" })).toBeInTheDocument();
+    expect(within(result).queryByText(/Definitions stop partway/)).not.toBeInTheDocument();
+  });
+
+  it("drops the shortfall notice once the pane stops showing that response", async () => {
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")], false, true),
+    );
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(await within(result).findByText(/kana readings/)).toBeInTheDocument();
+
+    // After a swap the pane holds the English it was asked about, which has no readings to have
+    // been dropped. What the response said about *its* output can only be said while that output
+    // is what's on screen, which is the same rule the notes and the glosses ride on.
+    await user.click(screen.getByRole("button", { name: "Swap languages" }));
+
+    expect(within(result).getByText("Is this a bat?")).toBeInTheDocument();
+    expect(within(result).queryByText(/kana readings/)).not.toBeInTheDocument();
+  });
+
+  it("runs both shortfalls into one notice rather than stacking two", async () => {
+    // A long Japanese source with more than the cap's worth of glossable words reaches exactly
+    // this state. The causes differ — length for the readings, a per-answer cap for the
+    // definitions — so the sentences stay distinct, but they are one block under the translation.
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("これ", 0, "This."), gloss("バット", 3, "Bat.")], true, true),
+    );
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    // One element holding both sentences: a regex spanning them can only match if they were
+    // rendered together, and the count is what says the pane didn't stack two notices instead.
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(
+      await within(result).findByText(
+        /^The text was too long to ask for kana readings, so this translation has none\. Definitions stop partway: 2 words are defined and the rest of the translation is not\.$/,
+      ),
+    ).toBeInTheDocument();
+    expect(within(result).getAllByText(/kana readings|Definitions stop partway/)).toHaveLength(1);
   });
 
   it("says nothing about definitions when none were dropped", async () => {
@@ -665,6 +740,30 @@ describe("TranslatePage", () => {
     expectOutOfDate(screen.getByRole("region", { name: "Translation result" }));
   });
 
+  it("keeps a draft typed into the far pane after the pickers swapped mid-request", async () => {
+    let respond: (response: Response) => void = () => undefined;
+    server.onGraphql("Translate", () => new Promise<Response>((resolve) => (respond = resolve)));
+    const user = await renderSignedIn();
+    const source = screen.getByLabelText("Text to translate");
+    await user.type(source, "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    // The swap button is disabled for the 5-20s the call takes; the pickers are not. Choosing the
+    // target language as the source swaps the pair, so the Japanese side becomes the editable box
+    // — and what gets typed there is a draft with no undo, exactly like the source pane's.
+    await pickLanguage(user, "Source language", /Japanese/);
+    await user.type(source, "自分で書いた下書き");
+    respond(translated("こんにちは", null));
+
+    // The response still settles the pair it asked about: English is now the far pane and holds
+    // the text Claude was given. But it may not write こんにちは over the draft on the way past.
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(await within(result).findByText("Hello")).toBeInTheDocument();
+    expect(source).toHaveValue("自分で書いた下書き");
+    // And having not written it, the pane must not claim the draft beside it is what was answered.
+    expectOutOfDate(result);
+  });
+
   it("resets an untouched source box when the response lands, so a swap is clean", async () => {
     server.onGraphql("Translate", () => translated("こんにちは", null));
     const user = await renderSignedIn();
@@ -853,6 +952,23 @@ describe("TranslatePage", () => {
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 
+  it("underlines a glossed word with a decoration that clears the 3:1 non-text minimum", async () => {
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")]),
+    );
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    const word = await screen.findByRole("button", { name: "バット" });
+
+    // The dotted underline is the only mark saying this word has a definition, which makes it a
+    // non-text UI indicator under WCAG 1.4.11. --color-frame-muted at 80% is 4.0:1 on
+    // --color-frame and 3.7:1 on --color-frame-stale, the two grounds the pane can be on; at the
+    // /50 this replaces it was 2.2:1 and 2.1:1, under the minimum on both.
+    expect(word).toHaveClass("decoration-frame-muted/80");
+    expect(word).toHaveClass("decoration-dotted");
+  });
+
   it("keeps the reading inside a glossed word", async () => {
     server.onGraphql("Translate", () =>
       translated("今日は良い天気ですね", null, "EN", "JA", "今日《きょう》は良《よ》い天気《てんき》ですね", [
@@ -865,8 +981,10 @@ describe("TranslatePage", () => {
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
 
     const result = screen.getByRole("region", { name: "Translation result" });
-    // The button's accessible name picks up the reading too, so match on the word itself.
-    const word = await within(result).findByRole("button", { name: /天気/ });
+    // The word itself is the accessible name, exactly: without an aria-label the name is the text
+    // content, and a browser folds each <rt> into that — "天気てんき, button" out of a screen
+    // reader. The reading is still announced from the card, which shows it beside the word.
+    const word = await within(result).findByRole("button", { name: "天気" });
     expect(readings(word)).toEqual(["てんき"]);
     // The other two readings are still there, outside the glossed word, and the text is unchanged.
     expect(readings(result)).toEqual(["きょう", "よ", "てんき"]);

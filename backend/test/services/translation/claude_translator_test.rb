@@ -78,10 +78,15 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     assert_nil @translator.translate(japanese_request).furigana
 
     WebMock.reset!
+    # Readings that do strip back to the translation, so only the target language can rule them
+    # out: kana over a Spanish word is not furigana, whatever it was built from.
     stub_request(:post, MESSAGES_URL).to_return(
-      message_response(translation: "¿Esto es un bate?", notes: "", furigana: "野球《やきゅう》")
+      message_response(translation: "¿Esto es un bate?", notes: "", furigana: "¿Esto es un bate《ベイト》?")
     )
-    assert_nil @translator.translate(@request).furigana
+    result = @translator.translate(@request)
+
+    assert_nil result.furigana
+    assert_not result.readings_omitted, "a Spanish target never had readings to omit"
   end
 
   test "the chosen gloss level reaches the user message, spelled as the prompt names it" do
@@ -303,52 +308,81 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     assert_nil @translator.translate(@request).notes
   end
 
-  test "a long source asks for no annotations and keeps none that come back anyway" do
+  test "a source over the furigana limit drops the readings and keeps the glosses" do
     stub_request(:post, MESSAGES_URL).to_return(
       message_response(translation: "これは野球のバットですか？", notes: "Baseball.",
         furigana: "これは野球《やきゅう》のバットですか？",
         glosses: [ { text: "野球", reading: "やきゅう", meaning: "baseball" } ])
     )
-    long = "あ" * (Translation::Prompt::ANNOTATION_LIMIT + 1)
+    long = "あ" * (Translation::Prompt::FURIGANA_LIMIT + 1)
 
     result = @translator.translate(japanese_request(source_text: long))
 
     assert_equal "これは野球のバットですか？", result.text, "the translation is what must survive"
-    assert_nil result.furigana
-    assert_empty result.glosses
+    assert_nil result.furigana, "furigana is the cost that grows with the source"
+    # The gloss list is bounded by MAX_GLOSSES however long the source is, so length is no reason
+    # to give up the definitions as well.
+    assert_equal [ "野球" ], result.glosses.map(&:text)
     assert_not result.glosses_truncated
     assert_requested(:post, MESSAGES_URL) do |req|
-      assert_includes req.body, "<annotations>off</annotations>"
+      assert_includes req.body, "<readings>off</readings>"
       true
     end
   end
 
-  test "a source at the annotation limit is annotated as before" do
+  test "a source over the furigana limit says so, so the reader is not left to infer it" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "これは野球のバットですか？", notes: "Baseball.", furigana: "")
+    )
+    long = "あ" * (Translation::Prompt::FURIGANA_LIMIT + 1)
+
+    assert @translator.translate(japanese_request(source_text: long)).readings_omitted
+  end
+
+  test "a long source with a non-Japanese target is not a readings degrade" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "¿Esto es un bate?", notes: "",
+        glosses: [ { text: "bate", reading: "", meaning: "bat de béisbol" } ])
+    )
+    long = Translation::Request.new(
+      source_text: "a" * (Translation::Prompt::FURIGANA_LIMIT + 1), source_language: Translation::Language::EN,
+      target_language: Translation::Language::ES, context: nil
+    )
+
+    result = @translator.translate(long)
+
+    assert_not result.readings_omitted, "Spanish has no readings, so none were given up"
+    assert_equal [ "bate" ], result.glosses.map(&:text)
+  end
+
+  test "a source at the furigana limit is annotated as before" do
     stub_request(:post, MESSAGES_URL).to_return(
       message_response(translation: "これは野球のバットですか？", notes: "Baseball.",
         furigana: "これは野球《やきゅう》のバットですか？",
         glosses: [ { text: "野球", reading: "やきゅう", meaning: "baseball" } ])
     )
-    at_limit = "あ" * Translation::Prompt::ANNOTATION_LIMIT
+    at_limit = "あ" * Translation::Prompt::FURIGANA_LIMIT
 
     result = @translator.translate(japanese_request(source_text: at_limit))
 
     assert_equal "これは野球《やきゅう》のバットですか？", result.furigana
     assert_equal [ "野球" ], result.glosses.map(&:text)
+    assert_not result.readings_omitted
     assert_requested(:post, MESSAGES_URL) do |req|
-      assert_includes req.body, "<annotations>on</annotations>"
+      assert_includes req.body, "<readings>on</readings>"
       true
     end
   end
 
   test "the output budget fits the response shape with room to spare" do
-    # The worst annotated reply, in tokens at ~1 token per Japanese character: the translation,
-    # the furigana at ~1.6x it, and the gloss entries at ~60 characters each. The worst
-    # unannotated one is the whole source-length limit as translation. See MAX_TOKENS.
-    annotated = (Translation::Prompt::ANNOTATION_LIMIT * 2.6) + (Translation::Prompt::MAX_GLOSSES * 60)
-    unannotated = Translation::Service::MAX_SOURCE_LENGTH
+    # The worst reply with readings, in tokens at ~1 token per Japanese character: the
+    # translation, the furigana at ~1.6x it, and the gloss entries at ~60 characters each. The
+    # worst without is the whole source-length limit as translation — plus the glosses, which the
+    # furigana limit no longer switches off. See MAX_TOKENS.
+    with_readings = (Translation::Prompt::FURIGANA_LIMIT * 2.6) + (Translation::Prompt::MAX_GLOSSES * 60)
+    without = Translation::Service::MAX_SOURCE_LENGTH + (Translation::Prompt::MAX_GLOSSES * 60)
 
-    assert_operator Translation::ClaudeTranslator::MAX_TOKENS, :>=, 2 * [ annotated, unannotated ].max,
+    assert_operator Translation::ClaudeTranslator::MAX_TOKENS, :>=, 2 * [ with_readings, without ].max,
       "a long reply must have room to finish; truncation costs the reader the translation itself"
   end
 
