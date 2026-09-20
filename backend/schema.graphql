@@ -215,9 +215,10 @@ type Translation {
   glosses: [Gloss!]!
 
   """
-  True when Claude offered more glosses than the cap allows and the extras were
-  dropped, so `glosses` runs out before the end of `text`. False when `glosses`
-  is everything there was.
+  True when more glosses were offered than the cap allows and the extras were
+  dropped, so `glosses` runs out before the end of `text`. False means only that
+  the cap did not cut the list off: `glosses` is never a complete index of
+  `text`, and a word without one is ordinary.
   """
   glossesTruncated: Boolean!
 

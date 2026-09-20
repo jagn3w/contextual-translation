@@ -103,13 +103,16 @@ export function GlossedWord({ gloss, children }: Props) {
                 2.1:1, the only new affordance on this branch to skip the check index.css records
                 for its other tokens.
 
-                `aria-label` because the accessible name would otherwise be the text content, and
-                for Japanese that folds each `<rt>` in: "天気てんき, button". `select-none` styles
-                the readings out of a copy but says nothing about the name. The word alone is the
-                name; the reading is on the card, which shows it beside the word. */}
+                The accessible name is the button's contents, which is the word alone. It used to
+                need an `aria-label` for that, because the contents include each reading's `<rt>`
+                and Chrome and Firefox fold those into the name: "天気てんき, button". The readings
+                are now `aria-hidden` where the ruby is built — see `rubyParts` in TranslatePage.tsx
+                — which fixes the same fold for the plain text beside this word, and the label went
+                with the problem rather than staying on as a second mechanism to drift out of step
+                with it. So: whatever renders ruby into this button hides its readings, or the name
+                garbles again. The reading itself is on the card, which shows it beside the word. */}
             <button
               type="button"
-              aria-label={gloss.text}
               onPointerDown={handlePointerDown}
               onPointerUp={handlePointerUp}
               className="inline cursor-help select-text appearance-none rounded-[2px] text-left underline decoration-frame-muted/80 decoration-dotted underline-offset-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"

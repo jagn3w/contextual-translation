@@ -26,6 +26,36 @@
   --color-accent: #2383e2;
   --color-accent-ink: #ffffff;
   --color-danger: #d44c47;
+  /* The focus indicator, kept as its own name because it is the one colour in here that answers to
+     a *non-text* rule: WCAG 1.4.11/2.4.11 want 3:1 between the indicator and what it sits on, and
+     that is measured against the backdrop, not against the ink. Full-strength accent, so:
+     on --color-canvas #ffffff  3.88:1
+     on --color-surface #f7f7f5 3.61:1  (the hover tint every one of these controls also shows)
+     on --color-frame   #efefeb 3.36:1  (the result pane, for when a control lands there)
+     all clear of 3:1. What it replaces was `focus-visible:ring-accent/30`, i.e.
+     color-mix(in oklab, #2383e2 30%, transparent): over the canvas that composites to
+     rgb(189,218,246) — 1.45:1 — and over the hover tint rgb(183,212,239) — 1.43:1. A ring nobody
+     can see is the same as no ring, and keyboard users are the only ones who ever get it. */
+  --color-focus: var(--color-accent);
+}
+
+/* The focus indicator itself, written once. Every focusable control uses `focus-ring` rather than
+   spelling out its own `focus:outline-none focus-visible:ring-…`: that string had drifted to three
+   opacities across four controls, and an indicator that is copied is an indicator that gets copied
+   wrong. Ratios are recorded beside --color-focus above.
+   `outline` rather than a box-shadow ring: it needs no ring-offset-color kept in step with whatever
+   the control happens to sit on, it traces the control's own border-radius, and it survives
+   forced-colors mode, where box-shadows are dropped. 2px is the minimum thickness WCAG 2.4.11 asks
+   of a perimeter indicator, and the 2px offset keeps it off the glyphs. */
+@utility focus-ring {
+  /* Clicking and tapping stay quiet — the indicator is for keyboard navigation, which is the
+     behaviour `focus:outline-none` was there for. */
+  outline: none;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
 }
 
 @layer base {

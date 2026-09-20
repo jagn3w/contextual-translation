@@ -13,9 +13,16 @@ module Types
     field :glosses, [ Types::GlossType ], null: false,
       description: "Words of `text` worth defining, in the order they appear in it, with " \
                    "non-overlapping spans. Empty when there is nothing to gloss."
+    # False cannot promise the list is complete, and must not say so: entries whose word the
+    # backend could not locate in `text` are dropped too, and this flag — the cap's flag — stays
+    # false for them, correctly. There is no separate field for that loss on purpose: a gap in
+    # the middle of a sentence is indistinguishable from "this word was not worth glossing",
+    # which is the ordinary state at the NOTABLE level, so there is no honest sentence to show a
+    # reader about it. The drop is logged instead (ClaudeTranslator#log_gloss_loss).
     field :glosses_truncated, Boolean, null: false,
-      description: "True when Claude offered more glosses than the cap allows and the extras were dropped, so " \
-                   "`glosses` runs out before the end of `text`. False when `glosses` is everything there was."
+      description: "True when more glosses were offered than the cap allows and the extras were dropped, so " \
+                   "`glosses` runs out before the end of `text`. False means only that the cap did not cut the " \
+                   "list off: `glosses` is never a complete index of `text`, and a word without one is ordinary."
     field :readings_omitted, Boolean, null: false,
       description: "True when the source was too long for kana readings to be asked for at all, so `furigana` " \
                    "is null because the request gave the readings up rather than because `text` has no kanji. " \

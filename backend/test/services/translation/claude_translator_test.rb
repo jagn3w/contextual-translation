@@ -73,6 +73,36 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     assert_includes log.string, "doesn't match the translation"
   end
 
+  test "a reading containing an opening bracket is not one group, because the browser says it isn't" do
+    # The client's READING_GROUP allows neither bracket inside a reading
+    # (frontend/app/src/lib/furigana.ts), so it reads this as the single group 《じ》 and the rest
+    # as text, and its round-trip check fails. A Ruby pattern that allowed an opening bracket
+    # there swallowed 《かん《じ》 whole, got 漢字 back, and shipped furigana the browser then threw
+    # away entirely — every reading in the reply lost, silently.
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "漢字", notes: "", furigana: "漢字《かん《じ》")
+    )
+
+    assert_nil @translator.translate(japanese_request).furigana
+  end
+
+  test "the 《…》 pattern is written once, so the Ruby and TypeScript spellings cannot drift apart" do
+    # prompt_test enforces the same discipline for MAX_GLOSSES. The needle is built from the
+    # constant rather than typed out, so this test is not itself the extra copy it forbids.
+    opener = T.must(Translation::ClaudeTranslator::FURIGANA_READING.source[0])
+    in_a_regexp = "/#{opener}"
+    own_line = /^\s*FURIGANA_READING =.*$/
+
+    copies = Dir[Rails.root.join("{app,lib,test}/**/*.rb").to_s].select do |path|
+      source = File.read(path)
+      source = source.sub(own_line, "") if path.end_with?("claude_translator.rb")
+      source.include?(in_a_regexp)
+    end
+
+    assert_empty copies.map { |path| Pathname.new(path).relative_path_from(Rails.root).to_s },
+      "use ClaudeTranslator::FURIGANA_READING instead of writing the pattern out again"
+  end
+
   test "furigana without readings, and furigana for a non-Japanese target, become nil" do
     stub_request(:post, MESSAGES_URL).to_return(message_response(translation: "ハローです", notes: "", furigana: "ハローです"))
     assert_nil @translator.translate(japanese_request).furigana
@@ -165,6 +195,30 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     assert_not_includes log.string, "murciélago"
     assert_not_includes log.string, "secret meaning"
     assert_includes log.string, "Dropped 1 of 2 glosses"
+  end
+
+  test "the dropped glosses are logged at warn, so production's info level still records them" do
+    # Production runs at log_level "info" (config/environments/production.rb), and nothing else
+    # reports this loss: glossesTruncated is the cap's flag and stays false, correctly, for a
+    # gloss the locator could not place. At debug the drop was recorded nowhere anyone could read
+    # it, and the test above passed only because ActiveSupport::Logger happens to default to
+    # DEBUG — so pin the level, not just the wording.
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "¿Esto es un bate?", notes: "",
+        glosses: [ { text: "murciélago", reading: "", meaning: "not in the translation" },
+                   { text: "bate", reading: "", meaning: "bat de béisbol" } ])
+    )
+    log = StringIO.new
+    translator = Translation::ClaudeTranslator.new(
+      client: Anthropic::Client.new(api_key: "k", max_retries: 0, timeout: 5),
+      logger: ::Logger.new(log, level: ::Logger::INFO)
+    )
+
+    result = translator.translate(@request)
+
+    assert_equal [ "bate" ], result.glosses.map(&:text)
+    assert_not result.glosses_truncated, "the cap dropped nothing; the locator did"
+    assert_match(/WARN -- : Dropped 1 of 2 glosses/, log.string)
   end
 
   test "a repeated surface form maps to successive occurrences, never backwards" do

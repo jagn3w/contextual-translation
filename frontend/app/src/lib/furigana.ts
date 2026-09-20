@@ -9,19 +9,46 @@
 export type RubySegment = { text: string; reading?: string };
 
 /**
- * What a reading may be written over. A character left out of this class ends the run early, so the
- * reading after it lands over the wrong base (一ヵ月《いっかげつ》 would put いっかげつ over 月 alone),
- * which is why the class covers every block real Japanese puts under a reading:
+ * What a reading may be written over: the characters a kanji run is built from. It takes two
+ * classes rather than one flat set, because the two failure modes pull in opposite directions.
+ * A character left out entirely ends the run early, so the reading after it lands over the wrong
+ * base (一ヵ月《いっかげつ》 would put いっかげつ over 月 alone). A character let in everywhere starts a
+ * run of its own inside a katakana word, so バケツ水《みず》 would put みず over ケツ水.
+ *
+ * `KANJI` is what a run may *begin and end* with — the blocks a word's kanji are actually written
+ * in, none of which can be mistaken for katakana:
  *   - CJK Unified Ideographs (一-鿿) and Extension A (㐀-䶿);
  *   - the compatibility ideographs (U+F900–U+FAFF), where the 﨑 of a name like 宮﨑 lives;
  *   - the astral extensions, B through the compatibility supplement (U+20000–U+2FA1F) — 𠮟, 𩸽 and
  *     most rare surname characters. The `u` flag is what makes this range match by code point;
- *   - the marks that only ever appear inside a kanji word: 〇 (the zero of 〇〇), 々 (repeat),
- *     〆 (shime) and the small ヵ/ヶ of 一ヵ月 / 三ヶ月.
+ *   - the marks that appear only in a kanji word and never in a katakana one: 〇 (the zero of
+ *     〇〇), 々 (repeat) and 〆 (shime).
  */
-const KANJI = /[〇々〆ヵヶ㐀-䶿一-鿿\uF900-\uFAFF\u{20000}-\u{2FA1F}]/u;
-/** The same class as a run, anchored: a reading sits over the kanji immediately before it. */
-const KANJI_RUN = new RegExp(`${KANJI.source}+$`, "u");
+const KANJI = /[〇々〆㐀-䶿一-鿿\uF900-\uFAFF\u{20000}-\u{2FA1F}]/u;
+
+/**
+ * What a run may *contain* but never begin or end with: the full-size ケ カ ノ ツ that spell
+ * 霞ケ関 (the Tokyo Metro spelling of Kasumigaseki), 一カ月, 一ノ瀬 and 四ツ谷, plus the small ヶ ヵ of
+ * 三ヶ月 / 一ヵ月. Every one of them is also an ordinary katakana letter, which is why they are
+ * admitted only with a true kanji on *both* sides — that is the whole of what keeps バケツ水 from
+ * being read as the run ケツ水, and it costs only the (unattested) word that would end in one.
+ *
+ * So this class is deliberately not "every katakana": a single stray letter between two kanji is
+ * the most it can ever absorb, and that shape is overwhelmingly one of these six.
+ */
+const KANJI_INTERIOR = /[ヵヶカケノツ]/u;
+
+/**
+ * The classes as a run, anchored: a reading sits over the kanji immediately before it. A run is a
+ * kanji, then optionally more of either class and a closing kanji — so it both starts and ends
+ * with a true kanji, and a trailing interior character is trimmed back off rather than ending it.
+ * `exec` returns the leftmost match, which is this run at its maximal: the earliest kanji it can
+ * start from, running to the end of `pending`.
+ */
+const KANJI_RUN = new RegExp(
+  `${KANJI.source}(?:(?:${KANJI.source}|${KANJI_INTERIOR.source})*${KANJI.source})?$`,
+  "u",
+);
 /** A reading group. The reading itself never contains a bracket, so it can't swallow the next one. */
 const READING_GROUP = /《([^《》]*)》/gu;
 
@@ -29,7 +56,9 @@ const READING_GROUP = /《([^《》]*)》/gu;
  * The base a reading belongs to: the maximal run of kanji that ends `pending`, and nothing else.
  * Empty when the group follows anything but kanji — the start of the string, kana, punctuation,
  * whitespace, or another group's base, which already carries a reading of its own — and the
- * reading is then dropped.
+ * reading is then dropped. The base has to be a *suffix* of `pending` (`parseFurigana` slices the
+ * plain run off in front of it), so trimming a trailing ケ/ツ/ノ back off a run leaves nothing
+ * touching the group and the reading is dropped for the same reason as any other non-kanji.
  *
  * Dropped rather than written over whatever character happens to precede it, because the backend
  * guarantees only that stripping every 《…》 group reproduces the translation

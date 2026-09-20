@@ -15,7 +15,10 @@ class Translation::FakeTranslatorTest < ActiveSupport::TestCase
     assert_equal "Fake translation using context: At work", result.notes
     assert_equal "fake", result.model
     assert_equal "[日本語《にほんご》] Hello", result.furigana
-    assert_equal result.text, result.furigana.gsub(/《[^》]*》/, ""), "furigana must strip back to the text"
+    # ClaudeTranslator::FURIGANA_READING, never a retyped copy of it: a third spelling of the
+    # 《…》 rule is how the Ruby and TypeScript ones came to disagree in the first place.
+    assert_equal result.text, result.furigana.gsub(Translation::ClaudeTranslator::FURIGANA_READING, ""),
+      "furigana must strip back to the text"
     assert_not result.readings_omitted
   end
 
@@ -85,6 +88,20 @@ class Translation::FakeTranslatorTest < ActiveSupport::TestCase
 
     assert_equal [ "[日本語]", "Hello", "there", "world" ], every.map(&:text)
     assert_operator every.size, :>, glosses_at(Translation::GlossLevel::NOTABLE).size
+  end
+
+  test "a space-delimited gloss lands on the whole word, the way ClaudeTranslator places it" do
+    # The position is the assertion, not the extracted substring: "me" occurs twice here, inside
+    # "memo" at 14 and standing alone at 22, and both spans hold the characters "me". The fake's
+    # own plain-substring search picked 14 — a real disagreement with production that every
+    # `text[starts_at, length] == gloss.text` check in this file was blind to.
+    text = "[ES] Send the memo to me"
+
+    result = translate("Send the memo to me", target_language: Translation::Language::ES)
+
+    assert_equal text, result.text
+    assert_equal [ "[ES]", "me" ], result.glosses.map(&:text)
+    assert_equal [ 0, 22 ], result.glosses.map(&:starts_at), "the standalone 'me', not the one inside 'memo'"
   end
 
   test "every level's spans really are in the text, in order and non-overlapping" do

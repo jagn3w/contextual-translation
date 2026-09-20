@@ -60,17 +60,19 @@ module Translation
       glosses_at(words, text, request)
     end
 
-    # Spans are located in `text` with a cursor — the way ClaudeTranslator locates Claude's, each
-    # after the end of the previous — so they really are substrings of it and never overlap,
-    # rather than hand-counted offsets that would drift the moment the fake translation changed.
+    # Spans are located by GlossLocator, the same object ClaudeTranslator places Claude's glosses
+    # with, so they really are substrings of `text` and never overlap — and so the dev and CI
+    # paths exercise the production rule rather than a second, plainer one. They did once: a
+    # local `text.index` put the gloss for "me" on the "me" inside "memo", which the fake's own
+    # tests could not catch, because the wrong occurrence still holds the right characters
+    # (design D2.4).
     sig { params(words: T::Array[String], text: String, request: Request).returns(T::Array[Gloss]) }
     def glosses_at(words, text, request)
-      cursor = 0
+      locator = GlossLocator.new(translation: text, language: request.target_language)
       words.filter_map do |word|
-        starts_at = text.index(word, cursor)
+        starts_at = locator.locate(word)
         next if starts_at.nil?
 
-        cursor = starts_at + word.length
         is_tag = word == tag(request)
         Gloss.new(
           text: word, meaning: is_tag ? "fake target-language tag" : "fake definition of #{word}",

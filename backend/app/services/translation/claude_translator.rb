@@ -35,11 +35,14 @@ module Translation
     # Time kept back for the Claude call itself when waiting for credentials.
     MIN_CALL_SECONDS = 10.0
     # Furigana notation: a reading in double angle brackets follows the run of kanji it reads,
-    # 漢字《かんじ》 (design D2.3).
-    FURIGANA_READING = /《[^》]*》/
-    # A character that counts as part of a word when deciding whether a gloss's text sits inside a
-    # longer one. Unicode-aware, so it covers accented Spanish as well as English.
-    WORD_CHARACTER = /[[:word:]]/
+    # 漢字《かんじ》 (design D2.3). The reading itself may not contain either bracket, which is
+    # what the browser's READING_GROUP says too (frontend/app/src/lib/furigana.ts) — and the two
+    # have to agree character for character, because each strips the groups out and compares what
+    # is left against the translation. A Ruby pattern that allowed 《 inside a reading accepted
+    # 漢字《かん《じ》 as a clean round trip and shipped it; the browser saw only 《じ》, failed its
+    # own check and dropped every reading in the reply. This constant is the one spelling: never
+    # write the pattern out again, here or in a test (see claude_translator_test.rb).
+    FURIGANA_READING = /《[^《》]*》/
 
     sig do
       params(
@@ -232,11 +235,11 @@ module Translation
     end
 
     # A gloss is only usable if the UI can find the word it describes, so locate every entry in
-    # the translation rather than trusting the offsets to be there: each "text" must occur at or
-    # after the end of the previous match, which keeps repeated words on successive occurrences
-    # and the spans in order and non-overlapping. Entries that don't fit — not a string, not in
-    # the translation any more, no meaning — are dropped one by one; a malformed list is simply
-    # no glosses. The translation still comes back either way: hover definitions are a bonus.
+    # the translation rather than trusting the offsets to be there — GlossLocator holds that rule
+    # for every translator, the fake included, so the dev path places a gloss exactly where
+    # production does. Entries that don't fit — not a string, not in the translation any more, no
+    # meaning — are dropped one by one; a malformed list is simply no glosses. The translation
+    # still comes back either way: hover definitions are a bonus.
     # Returns every entry that could be placed, in order, the ones past the cap included:
     # Result.for_request is what cuts the list to Prompt::MAX_GLOSSES and tells the reader it was
     # cut, so this only has to say which entries are usable at all.
@@ -246,14 +249,8 @@ module Translation
       return [] if request.gloss_level == GlossLevel::NONE
       return [] unless value.is_a?(Array)
 
-      cursor = 0
-      value.filter_map do |entry|
-        gloss = gloss_from(entry, translation, cursor, request)
-        next if gloss.nil?
-
-        cursor = gloss.starts_at + gloss.length
-        gloss
-      end
+      locator = GlossLocator.new(translation:, language: request.target_language)
+      value.filter_map { |entry| gloss_from(entry, locator, request) }
     end
 
     # What the reader lost, counted against what Claude offered: entries that couldn't be placed
@@ -267,24 +264,25 @@ module Translation
       return unless (lost = value.size - result.glosses.size).positive?
 
       over_cap = located.size - result.glosses.size
-      @logger.debug("Dropped #{lost} of #{value.size} glosses Claude returned " \
-                    "(#{over_cap} of them over the #{Prompt::MAX_GLOSSES} cap)")
+      # warn, not debug: production runs at log_level "info" (config/environments/production.rb),
+      # so a debug line here was written nowhere anyone could read it and the loss left no trace
+      # at all. It cannot be inferred from the result either — `glosses_truncated` is the cap's
+      # flag and stays false, correctly, for an entry the locator could not place. furigana_from
+      # warns about its equivalent drop for exactly this reason; this is the same loss.
+      @logger.warn("Dropped #{lost} of #{value.size} glosses Claude returned " \
+                   "(#{over_cap} of them over the #{Prompt::MAX_GLOSSES} cap)")
     end
 
-    # nil for anything unusable. Offsets count Unicode code points, which is what String#index
-    # and String#length return, and what the UI counts too.
-    sig do
-      params(entry: T.untyped, translation: String, cursor: Integer, request: Request)
-        .returns(T.nilable(Gloss))
-    end
-    def gloss_from(entry, translation, cursor, request)
+    # nil for anything unusable, the locator's cursor untouched by the ones it rejects.
+    sig { params(entry: T.untyped, locator: GlossLocator, request: Request).returns(T.nilable(Gloss)) }
+    def gloss_from(entry, locator, request)
       return nil unless entry.is_a?(Hash)
 
       text = entry["text"]
       meaning = entry["meaning"]
       return nil unless text.is_a?(String) && !text.empty? && meaning.is_a?(String) && meaning.present?
 
-      starts_at = locate(text, translation, cursor, request)
+      starts_at = locator.locate(text)
       return nil if starts_at.nil?
 
       # Kana readings are the Japanese feature; for any other target whatever Claude put in
@@ -292,39 +290,6 @@ module Translation
       reading = request.target_language == Language::JA ? entry["reading"] : nil
       Gloss.new(text:, reading: reading.is_a?(String) ? reading.presence : nil, meaning:,
         starts_at:, length: text.length)
-    end
-
-    # Where to underline the gloss: the first occurrence at or after `cursor`. In a space-delimited
-    # target that has to be a whole word — a gloss of "age" belongs to "the age of consent", not to
-    # the "age" inside "message", and pinning it to the wrong one underlines the wrong characters
-    # and pushes the cursor past the real word, dropping the glosses that follow. Japanese writes
-    # no boundaries, so a gloss there is legitimately inside a longer run and plain substring
-    # search is the only thing that can be meant (design D2.3). If no whole-word occurrence is
-    # left, the raw index still beats losing the entry.
-    sig { params(text: String, translation: String, cursor: Integer, request: Request).returns(T.nilable(Integer)) }
-    def locate(text, translation, cursor, request)
-      raw = translation.index(text, cursor)
-      return raw unless request.target_language.space_delimited?
-
-      whole_word_index(text, translation, cursor) || raw
-    end
-
-    # The first occurrence at or after `from` with no word character against either end.
-    sig { params(text: String, translation: String, from: Integer).returns(T.nilable(Integer)) }
-    def whole_word_index(text, translation, from)
-      at = T.let(translation.index(text, from), T.nilable(Integer))
-      while at
-        before = at.zero? ? nil : translation[at - 1]
-        return at unless word_character?(before) || word_character?(translation[at + text.length])
-
-        at = translation.index(text, at + 1)
-      end
-      nil
-    end
-
-    sig { params(character: T.nilable(String)).returns(T::Boolean) }
-    def word_character?(character)
-      !character.nil? && character.match?(WORD_CHARACTER)
     end
 
     sig { params(message: Anthropic::Models::Beta::BetaMessage, started: Float).void }

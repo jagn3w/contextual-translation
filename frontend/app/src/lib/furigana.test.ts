@@ -57,6 +57,35 @@ describe("parseFurigana", () => {
     expect(parseFurigana("一ヵ月《いっかげつ》")).toEqual([{ text: "一ヵ月", reading: "いっかげつ" }]);
   });
 
+  it("keeps the full-size ケ/カ/ノ/ツ that spell a kanji word inside the base", () => {
+    // Place and counter names write these as full-size katakana — 霞ケ関 is how the Tokyo Metro
+    // spells Kasumigaseki — and they sit *inside* the word. Left out of the run the reading lands
+    // over the tail alone and the pane teaches that 関 reads かすみがせき, which is the exact lie the
+    // module exists to prevent; the annotateTranslation round-trip can't catch it, because a
+    // partial base is still non-empty and still strips back to the translation.
+    expect(parseFurigana("霞ケ関《かすみがせき》")).toEqual([{ text: "霞ケ関", reading: "かすみがせき" }]);
+    expect(parseFurigana("四ツ谷《よつや》")).toEqual([{ text: "四ツ谷", reading: "よつや" }]);
+    expect(parseFurigana("一ノ瀬《いちのせ》")).toEqual([{ text: "一ノ瀬", reading: "いちのせ" }]);
+    expect(parseFurigana("一ケ月《いっかげつ》")).toEqual([{ text: "一ケ月", reading: "いっかげつ" }]);
+    expect(parseFurigana("一カ所《いっかしょ》")).toEqual([{ text: "一カ所", reading: "いっかしょ" }]);
+  });
+
+  it("will not start a base at one of those letters, so a katakana word keeps them", () => {
+    // The price of admitting ケ/カ/ノ/ツ: each is an ordinary katakana letter too. They are taken
+    // only with a true kanji on both sides, so the run here is 水 and バケツ stays plain text —
+    // みず written over ケツ水 would be the same lie in the other direction.
+    expect(parseFurigana("バケツ水《みず》")).toEqual([{ text: "バケツ" }, { text: "水", reading: "みず" }]);
+    expect(parseFurigana("ノート《のーと》")).toEqual([{ text: "ノート" }]);
+    expect(parseFurigana("カタカナ語《ご》")).toEqual([{ text: "カタカナ" }, { text: "語", reading: "ご" }]);
+  });
+
+  it("trims a run back rather than ending it on one of those letters", () => {
+    // A run has to end in a true kanji, and the base has to be the text immediately before the
+    // group, so there is nothing left for かすみが to sit over: dropped, like any other reading
+    // that doesn't follow kanji.
+    expect(parseFurigana("霞ケ《かすみが》")).toEqual([{ text: "霞ケ" }]);
+  });
+
   it("drops a reading that doesn't follow kanji rather than writing it over the wrong base", () => {
     // The backend guarantees only that stripping the groups reproduces the translation, never
     // where a group sits. Over the character before it, おねがい would be written over い alone —

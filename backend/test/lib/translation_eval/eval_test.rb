@@ -56,6 +56,29 @@ class TranslationEvalTest < ActiveSupport::TestCase
     assert_match(%r{-- passed \d/3  p50 \d+\.\ds  p95 \d+\.\ds}, io.string)
   end
 
+  test "the length case is timed on its own line and kept out of the latency percentiles" do
+    # It is the costliest reply the prompt allows by construction, so it is a measurement, not a
+    # sample of what a reader waits for. With 19 cases the 95th percentile is the 19th value, so
+    # leaving it in made the slowest case *be* the p95 and design D2.2's target read as blown on
+    # every run. The slow translator here stands in for the tens of seconds the real one takes.
+    cases = TranslationEval::EvalCase.load_file(CASES_PATH)
+    slow = Class.new do
+      include Translation::Translator
+      define_method(:translate) do |request|
+        sleep(0.15) if request.source_text.length > 1_000
+        Translation::FakeTranslator.new.translate(request)
+      end
+    end
+    io = StringIO.new
+
+    TranslationEval::Runner.new(translator: slow.new, cases:, io:).run(label: "slow")
+
+    assert_match(/p95 0\.0s  max 0\.0s/, io.string,
+      "the long case's seconds must not reach the percentiles or the max")
+    assert_match(/^\s+length\s+notice-long-ja\s+0\.\ds/, io.string, "its cost still has to be reported")
+    assert_match(/latency over #{cases.size - 1} cases/, io.string, "and the reader told what the p95 covers")
+  end
+
   test "an unexpected error fails its case instead of aborting the run" do
     cases = TranslationEval::EvalCase.load_file(CASES_PATH).first(2)
     broken = Class.new do

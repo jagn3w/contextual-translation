@@ -64,6 +64,20 @@ function textWithoutReadings(pane: HTMLElement): string {
 }
 
 /**
+ * What a screen reader has to read out of an element: its text with the `aria-hidden` subtrees
+ * gone, which is the rule the accessible name computation and every AT follow. jsdom has no screen
+ * reader, so this models one thing about them — and it is the thing this pane got wrong, `<rt>`
+ * being exposed as static text in Chrome and Firefox. It is *not* `textWithoutReadings` by another
+ * name: that one takes the readings out by tag, this one by what is hidden, and they agree only
+ * because the readings are hidden. Untie them and this returns 今日きょうは良よい天気てんきですね.
+ */
+function announcedText(element: HTMLElement): string {
+  const copy = element.cloneNode(true) as HTMLElement;
+  for (const hidden of copy.querySelectorAll("[aria-hidden='true']")) hidden.remove();
+  return copy.textContent ?? "";
+}
+
+/**
  * How the pane says its contents are out of date: a dimmed ground and a named marker. Never by
  * dimming the ink — a blanket opacity over the frame put the translation under WCAG AA — so these
  * also assert that the old `opacity-60` has not come back.
@@ -173,6 +187,39 @@ describe("TranslatePage", () => {
     for (const rt of annotations) expect(rt).toHaveClass("select-none");
   });
 
+  it("keeps the readings out of what a screen reader reads, in the paragraph and in a glossed word", async () => {
+    server.onGraphql("Translate", () =>
+      translated("今日は良い天気ですね", null, "EN", "JA", "今日《きょう》は良《よ》い天気《てんき》ですね", [
+        gloss("天気", 5, "The weather.", "てんき"),
+      ]),
+    );
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Nice weather today");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    const result = screen.getByRole("region", { name: "Translation result" });
+    await waitFor(() => expect(result.querySelectorAll("ruby")).toHaveLength(3));
+
+    // Chrome and Firefox expose <rt> as static text, so the sentence NVDA and VoiceOver read was
+    // 今日きょうは良よい天気てんきですね — every reading run into the word it sits over. The pane
+    // exists to be read; hiding the readings from the accessibility tree is what makes it readable.
+    const paragraph = result.querySelector("ruby")?.closest("p");
+    expect(paragraph).not.toBeNull();
+    expect(announcedText(paragraph as HTMLElement)).toBe("今日は良い天気ですね");
+    const annotations = [...result.querySelectorAll("rt")];
+    expect(annotations).toHaveLength(3);
+    for (const rt of annotations) expect(rt).toHaveAttribute("aria-hidden", "true");
+
+    // The same rule put through the real name algorithm, on the one element in the pane that has
+    // an accessible name. It is the name from the button's *contents* — the aria-label that used
+    // to fix this one word by hand is gone, so there is no second mechanism to drift out of step
+    // with the one above, and a glossed word is announced exactly like the plain word beside it.
+    const word = within(result).getByRole("button", { name: "天気" });
+    expect(word).toHaveAccessibleName("天気");
+    expect(word).not.toHaveAttribute("aria-label");
+  });
+
   it("renders plain text when there are no readings to show", async () => {
     server.onGraphql("Translate", () => translated("Hola", null, "EN", "ES"));
     const user = await renderSignedIn();
@@ -209,8 +256,11 @@ describe("TranslatePage", () => {
     // goes on implying an annotated answer while the readings quietly aren't there. `furigana` is
     // null either way — the flag is the only thing that separates "too long to ask" from "this
     // Japanese has no kanji", and only the first is the reader's to know about.
+    // The gloss carries a reading, which is the case the notice may not talk over: `gloss_from`
+    // keeps `reading` for any Japanese target whatever the length gate did, so this pane both
+    // prints "no readings" and hands one over on hover.
     server.onGraphql("Translate", () =>
-      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")], false, true),
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.", "ばっと")], false, true),
     );
     const user = await renderSignedIn();
 
@@ -218,13 +268,24 @@ describe("TranslatePage", () => {
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
 
     const result = screen.getByRole("region", { name: "Translation result" });
+    // What was given up is the ruby over the translation, and the sentence says that much and
+    // stops. "so this translation has none" was a claim about the whole answer, and the reader
+    // disproved it by hovering the first defined word.
     expect(
-      await within(result).findByText("The text was too long to ask for kana readings, so this translation has none."),
+      await within(result).findByText(
+        "The text was too long to ask for kana readings over the translation, so it has none.",
+      ),
     ).toBeInTheDocument();
+    expect(within(result).queryByText(/this translation has none/)).not.toBeInTheDocument();
     expect(result.querySelectorAll("ruby")).toHaveLength(0);
     // The definitions survived the length switch, and say nothing about having been cut short.
-    expect(within(result).getByRole("button", { name: "バット" })).toBeInTheDocument();
+    const word = within(result).getByRole("button", { name: "バット" });
     expect(within(result).queryByText(/Definitions stop partway/)).not.toBeInTheDocument();
+
+    // And the per-word reading survived with them — in the same pane, under the same notice.
+    word.focus();
+    const tooltip = await screen.findByRole("tooltip");
+    expect(within(tooltip).getByText("ばっと")).toBeInTheDocument();
   });
 
   it("drops the shortfall notice once the pane stops showing that response", async () => {
@@ -263,7 +324,7 @@ describe("TranslatePage", () => {
     const result = screen.getByRole("region", { name: "Translation result" });
     expect(
       await within(result).findByText(
-        /^The text was too long to ask for kana readings, so this translation has none\. Definitions stop partway: 2 words are defined and the rest of the translation is not\.$/,
+        /^The text was too long to ask for kana readings over the translation, so it has none\. Definitions stop partway: 2 words are defined and the rest of the translation is not\.$/,
       ),
     ).toBeInTheDocument();
     expect(within(result).getAllByText(/kana readings|Definitions stop partway/)).toHaveLength(1);
@@ -653,6 +714,46 @@ describe("TranslatePage", () => {
     expectUpToDate(screen.getByRole("region", { name: "Translation result" }));
   });
 
+  it("keeps each language's readings, note and freshness when another direction is answered in between", async () => {
+    server.onGraphql("Translate", (body) => {
+      const { input } = body["variables"] as { input: { targetLanguage: string } };
+      return input.targetLanguage === "JA"
+        ? translated("日本語", "The language, not the country.", "EN", "JA", "日本語《にほんご》")
+        : translated("japonés", "Lower case in Spanish.", "EN", "ES");
+    });
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Japanese");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    const result = screen.getByRole("region", { name: "Translation result" });
+    await waitFor(() => expect(result.querySelectorAll("ruby")).toHaveLength(1));
+
+    // A second direction out of the same, unedited English. The furigana, the note and the
+    // shortfall flags used to live in one page-wide slot that this answer overwrote — so the
+    // Japanese came back bare and marked out of date, for a re-translate against a 20/min,
+    // 300/day cap that would have returned the identical text.
+    await pickLanguage(user, "Target language", /Spanish/);
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    expect(await within(result).findByText("japonés")).toBeInTheDocument();
+    expect(within(result).getByText("Lower case in Spanish.")).toBeInTheDocument();
+
+    await pickLanguage(user, "Target language", /Japanese/);
+
+    expect(within(result).getByText("日本語")).toBeInTheDocument();
+    expect(readings(result)).toEqual(["にほんご"]);
+    expect(within(result).getByText("The language, not the country.")).toBeInTheDocument();
+    // Same source text, same context, same gloss level, same pair: nothing here is out of date,
+    // and the two requests above are all this interaction may cost.
+    expectUpToDate(result);
+    expect(server.requests.filter((request) => request.body["operationName"] === "Translate")).toHaveLength(2);
+
+    // Spanish kept its own answer through all of that, rather than the two languages sharing one.
+    await pickLanguage(user, "Target language", /Spanish/);
+
+    expect(within(result).getByText("japonés")).toBeInTheDocument();
+    expect(within(result).getByText("Lower case in Spanish.")).toBeInTheDocument();
+    expectUpToDate(result);
+  });
+
   it("blocks text over the limit with a visible reason instead of truncating it", async () => {
     const user = await renderSignedIn();
     const source = screen.getByLabelText("Text to translate");
@@ -981,9 +1082,9 @@ describe("TranslatePage", () => {
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
 
     const result = screen.getByRole("region", { name: "Translation result" });
-    // The word itself is the accessible name, exactly: without an aria-label the name is the text
-    // content, and a browser folds each <rt> into that — "天気てんき, button" out of a screen
-    // reader. The reading is still announced from the card, which shows it beside the word.
+    // The word itself is the accessible name, exactly — the readings inside it being aria-hidden,
+    // so a browser has nothing to fold in ("天気てんき, button" is what that used to sound like).
+    // The reading is still announced from the card, which shows it beside the word.
     const word = await within(result).findByRole("button", { name: "天気" });
     expect(readings(word)).toEqual(["てんき"]);
     // The other two readings are still there, outside the glossed word, and the text is unchanged.

@@ -36,16 +36,19 @@ export function GlossLevelSelect({ value, onChange }: Props) {
   return (
     <Select.Root value={value} onValueChange={(next) => onChange(next as GlossLevel)}>
       {/* min-w-0 + truncate: the count on the row's other end keeps its digits; this gives way.
-          `asChild` for the same reason as LanguageSelect: Select.Value drops `className`, so the
-          truncation has to be on a span of ours. */}
+          A span *around* Select.Value for the same two reasons as LanguageSelect: Select.Value
+          drops `className`, so the truncation has to be on a span of ours, and it may not be
+          slotted in with `asChild` because what `asChild` clones is Radix's internal
+          `React.Fragment`, which swallows the ref and makes React log an invalid-prop error per
+          render. See the longer note there. */}
       <Select.Trigger
         aria-label="Definitions"
         title="Which words in the translation get a definition"
-        className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted hover:bg-surface hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+        className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted hover:bg-surface hover:text-ink focus-ring"
       >
-        <Select.Value asChild>
-          <span className="truncate">Definitions: {LEVEL_NAMES[value]}</span>
-        </Select.Value>
+        <span className="truncate">
+          <Select.Value>Definitions: {LEVEL_NAMES[value]}</Select.Value>
+        </span>
         <Select.Icon className="shrink-0" aria-hidden>
           ▾
         </Select.Icon>

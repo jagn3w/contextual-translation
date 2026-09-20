@@ -17,7 +17,18 @@ export function useAutoGrowTextarea(value: string): RefObject<HTMLTextAreaElemen
     if (textarea === null) return;
     textarea.style.height = "auto";
     const needed = textarea.scrollHeight;
-    textarea.style.height = needed === 0 ? "" : `${needed}px`;
+    // `scrollHeight` is the content box plus padding and excludes the borders, but Tailwind's
+    // preflight makes every box `border-box`, so the height we write has to *contain* them.
+    // Written as `needed` alone, a bordered textarea (the context field is `border border-line`)
+    // ends up with a padding box 2px shorter than its content, and `overflow-hidden` quietly eats
+    // the difference — worst on CJK glyphs, which fill the em box, in a field meant to be typed
+    // in Spanish and Japanese. It never self-corrects either: the ResizeObserver pass measures
+    // the same numbers and rewrites the same value, so it settles short rather than growing out
+    // of it. Measured here, with the box already collapsed, so any CSS min-height cancels out of
+    // the subtraction and only the borders are left. (The source textarea is unbordered and gets
+    // 0, which is why it never showed the bug.)
+    const borders = textarea.offsetHeight - textarea.clientHeight;
+    textarea.style.height = needed === 0 ? "" : `${needed + borders}px`;
   }, []);
 
   // Layout effect, not effect: the resize lands in the same frame as the new text, so no flicker.

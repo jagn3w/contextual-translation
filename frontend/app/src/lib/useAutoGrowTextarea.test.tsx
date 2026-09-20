@@ -55,6 +55,32 @@ function stubResizeObserver() {
   return { resize: () => callbacks.forEach((fire) => fire()), observing: () => callbacks.length };
 }
 
+/** One border edge of the fake layout, in px — the context field's `border border-line`. */
+const BORDER = 1;
+
+/**
+ * The other half of a browser's box metrics, which jsdom also never computes: `clientHeight` is
+ * the padding box (borders excluded, like `scrollHeight`) and `offsetHeight` is the border box.
+ * Their difference is the pair of horizontal borders, which is exactly what Tailwind's
+ * `box-sizing: border-box` means the written height has to leave room for. While the box is
+ * collapsed to `auto` — the only moment the hook measures — the padding box is the content, so
+ * `clientHeight` tracks `scrollHeight`.
+ */
+function stubBorders() {
+  Object.defineProperty(HTMLTextAreaElement.prototype, "clientHeight", {
+    configurable: true,
+    get(this: HTMLTextAreaElement): number {
+      return this.scrollHeight;
+    },
+  });
+  Object.defineProperty(HTMLTextAreaElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLTextAreaElement): number {
+      return this.clientHeight + 2 * BORDER;
+    },
+  });
+}
+
 /**
  * Hands `scrollHeight` back to jsdom, which answers 0 for everything. Deleting the own property
  * uncovers the inherited one on Element.prototype; `scrollHeight` is declared readonly, so the
@@ -62,6 +88,8 @@ function stubResizeObserver() {
  */
 function restoreScrollHeight() {
   delete (HTMLTextAreaElement.prototype as unknown as Record<string, unknown>)["scrollHeight"];
+  delete (HTMLTextAreaElement.prototype as unknown as Record<string, unknown>)["clientHeight"];
+  delete (HTMLTextAreaElement.prototype as unknown as Record<string, unknown>)["offsetHeight"];
 }
 
 function Grower({ value }: { value: string }) {
@@ -113,6 +141,31 @@ describe("useAutoGrowTextarea", () => {
     observer.resize();
 
     expect(box()).toBe(`${4 * LINE}px`);
+  });
+
+  it("leaves room for the borders, which box-sizing: border-box makes part of the height", () => {
+    // The context field is bordered, and preflight makes it border-box: `scrollHeight` excludes
+    // the borders, so writing it straight back leaves the padding box 2px short of the content
+    // and `overflow-hidden` hides the clipped row — worst on CJK, which fills the em box. A
+    // second measuring pass can't rescue it: it reads the same numbers and writes the same value.
+    stubScrollHeight();
+    stubBorders();
+    const { rerender } = render(<Grower value={"one\ntwo"} />);
+    expect(box()).toBe(`${2 * LINE + 2 * BORDER}px`);
+
+    // And it settles there rather than creeping up a border per pass.
+    rerender(<Grower value={"one\ntwo"} />);
+
+    expect(box()).toBe(`${2 * LINE + 2 * BORDER}px`);
+  });
+
+  it("still hands the height back to CSS when a bordered box lays out to nothing", () => {
+    // Borders alone must not turn the jsdom fallback into a real height: `2px` would collapse the
+    // frame's min-height just as `0px` would.
+    stubBorders();
+    render(<Grower value={"one\ntwo"} />);
+
+    expect(box()).toBe("");
   });
 
   it("stops observing when the textarea goes away", () => {

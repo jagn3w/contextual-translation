@@ -7,6 +7,14 @@ module TranslationEval
   class Runner
     extend T::Sig
 
+    # The cases in this category exist to measure the costliest reply the prompt allows — a
+    # source at the furigana limit, readings on, every word glossed — so their latency is a
+    # separate measurement, not a sample of what a reader waits for. Left in the percentiles they
+    # swamped them: at 19 cases the 95th percentile is the 19th value, so the one case built to
+    # be the slowest *was* the p95, and design D2.2's target read as blown on every run whether
+    # or not anything had regressed. Each one is timed on its own line instead.
+    LATENCY_EXCLUDED_CATEGORY = "length"
+
     class Outcome < T::Struct
       const :eval_case, EvalCase
       const :seconds, Float
@@ -83,12 +91,20 @@ module TranslationEval
 
     sig { params(outcomes: T::Array[Outcome]).void }
     def summarize(outcomes)
-      seconds = outcomes.map(&:seconds)
+      timed, untimed = outcomes.partition { |outcome| outcome.eval_case.category != LATENCY_EXCLUDED_CATEGORY }
+      seconds = timed.map(&:seconds)
       passed = outcomes.count { |outcome| outcome.failures.empty? }
+      # Pass counts are over every case; the latencies are over the timed ones only, and say so,
+      # so nobody reads a p95 taken over 18 cases as one taken over 19.
       @io.puts format(
-        "-- passed %d/%d  p50 %.1fs  p95 %.1fs  max %.1fs",
-        passed, outcomes.size, self.class.percentile(seconds, 0.5), self.class.percentile(seconds, 0.95), seconds.max || 0.0
+        "-- passed %d/%d  p50 %.1fs  p95 %.1fs  max %.1fs  (latency over %d cases; %s timed separately)",
+        passed, outcomes.size, self.class.percentile(seconds, 0.5), self.class.percentile(seconds, 0.95),
+        seconds.max || 0.0, timed.size, LATENCY_EXCLUDED_CATEGORY
       )
+      untimed.each do |outcome|
+        @io.puts format("   %-10s %-22s %.1fs  (the worst reply the prompt allows; not in the percentiles)",
+          outcome.eval_case.category, outcome.eval_case.id, outcome.seconds)
+      end
       outcomes.group_by { |outcome| outcome.eval_case.category }.each do |category, group|
         @io.puts format("   %-10s %d/%d", category, group.count { |outcome| outcome.failures.empty? }, group.size)
       end
