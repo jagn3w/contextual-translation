@@ -38,6 +38,9 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
       content = body.dig("messages", 0, "content")
       assert_includes content, "<context>At a baseball game</context>"
       assert_includes content, "<target_language>Spanish</target_language>"
+      # The notes language is named per request, not described in the fixed system prompt: with a
+      # Japanese translation in front of it, "the source text's language" drifted to Japanese.
+      assert_includes content, "<notes_language>English</notes_language>"
       assert_includes content, "Is this a bat?"
       true
     end

@@ -13,7 +13,8 @@ module Translation
       intent of the original, natural in the target language, and right for the setting.
 
       The user message contains the text to translate in <source_text>, the source and target
-      languages, and optionally a description of the situation in <context>.
+      languages, the language to write your notes in as <notes_language>, and optionally a
+      description of the situation in <context>.
 
       How to use the context:
       - Use it to resolve ambiguity. A word or phrase with several possible meanings ("bat",
@@ -39,9 +40,11 @@ module Translation
         ください).
       - Do not add explanations to the translation itself.
 
-      In "notes", write one or two short sentences in the source text's language for the person
-      who asked: which meaning you chose for anything ambiguous and why, and which formality and
-      regional variety you used. Use an empty string only if there is truly nothing worth noting.
+      In "notes", write one or two short sentences for the person who asked: which meaning you
+      chose for anything ambiguous and why, and which formality and regional variety you used.
+      Write them in <notes_language> — the language they wrote to you in, never the language you
+      translated into, however much of it you have just been writing. Use an empty string only if
+      there is truly nothing worth noting.
 
       In "furigana", repeat the translation exactly, adding the reading of each run of kanji in
       double angle brackets straight after it: 漢字《かんじ》を書《か》く. Removing every 《…》
@@ -54,7 +57,11 @@ module Translation
         type: "object",
         properties: {
           translation: { type: "string", description: "The translated text." },
-          notes: { type: "string", description: "Short notes on meaning, formality and region choices." },
+          notes: {
+            type: "string",
+            description: "Short notes on meaning, formality and region choices, written in <notes_language> " \
+                         "(the source text's language), never in the language translated into."
+          },
           furigana: {
             type: "string",
             description: "The translated text repeated verbatim, with the reading of each run of kanji " \
@@ -74,6 +81,7 @@ module Translation
       <<~MESSAGE
         <source_language>#{request.source_language.english_name}</source_language>
         <target_language>#{request.target_language.english_name}</target_language>
+        <notes_language>#{request.source_language.english_name}</notes_language>
         <context>#{request.context.presence || "(none given)"}</context>
         <source_text>
         #{request.source_text}
