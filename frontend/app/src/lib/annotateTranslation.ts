@@ -4,7 +4,7 @@
  * word that may itself contain ruby, so the two have to be interleaved before any markup exists:
  * this module does that, and keeps the code point arithmetic out of the component.
  */
-import { hasKanji, parseFurigana, type RubySegment } from "./furigana.ts";
+import { parseFurigana, type RubySegment } from "./furigana.ts";
 
 /**
  * A word of the translation with a short definition to show where the reader hovers it (design
@@ -125,24 +125,20 @@ export function annotateTranslation(
     runs.push(span.gloss === undefined ? { parts } : { parts, gloss: span.gloss });
   }
 
-  // A reading is only right over the kanji it was measured against. An unsplit segment has one
-  // piece and simply keeps it; a split one has three cases:
-  //   - exactly one piece kept kanji (天気 cut as 天|気です after a kana boundary, or 良い as 良|い):
-  //     that piece is what the reading was measured against, so it carries it;
-  //   - no piece kept kanji — the fake translator's "[JA]《ジェイエー》" (design D2.4), whose base is
-  //     "]" — so the first piece carries it, exactly as the unsplit segment would have;
-  //   - more than one piece kept kanji (東京駅《とうきょうえき》 glossed as 東京, cut 東京|駅): the
-  //     reading belongs to the compound, not to either half, and there is no honest way to divide
-  //     it. Giving it to the first piece would teach the reader that 東京 reads とうきょうえき, so
-  //     the reading is dropped and both pieces render plain. A missing reading is a gap; a wrong
-  //     one is a lie, and this pane is what someone is learning the word from.
+  // A reading is only right over the base it was measured against, and a segment that carries one
+  // *is* that base: parseFurigana gives it the whole run of kanji before the 《…》 group — or, for
+  // the fake translator's "[JA]《ジェイエー》" (design D2.4), the single character before it. So a
+  // base that came through the span boundaries in one piece therefore keeps its reading, and one
+  // a gloss cut loses it: 東京駅《とうきょうえき》 glossed as 東京 leaves 東京 and 駅, and neither
+  // half reads とうきょうえき. A base is kanji all the way through, so no half of a cut one is
+  // what the reading was measured against and there is nothing to hand it to — and a missing
+  // reading is a gap where a wrong one is a lie, in the pane someone is learning the word from.
   segments.forEach((segment, index) => {
     const reading = segment.reading;
     if (reading === undefined) return;
     const pieces = piecesOf[index] ?? [];
-    const withKanji = pieces.filter((piece) => hasKanji(piece.text));
-    if (withKanji.length > 1) return;
-    const carrier = withKanji[0] ?? pieces[0];
+    if (pieces.length !== 1) return;
+    const carrier = pieces[0];
     if (carrier !== undefined) carrier.reading = reading;
   });
 

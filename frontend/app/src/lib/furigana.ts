@@ -25,15 +25,6 @@ const KANJI_RUN = new RegExp(`${KANJI.source}+$`, "u");
 /** A reading group. The reading itself never contains a bracket, so it can't swallow the next one. */
 const READING_GROUP = /《([^《》]*)》/gu;
 
-/**
- * Whether anything in `text` can carry a reading. Exported for `annotateTranslation`, which splits
- * a segment when a gloss starts or ends inside it and has to decide which half keeps the reading;
- * it belongs here so "what counts as kanji" is defined once.
- */
-export function hasKanji(text: string): boolean {
-  return KANJI.test(text);
-}
-
 /** The last character of `text` as a user sees it, keeping an astral character's two units together. */
 function trailingCharacter(text: string): string {
   const unit = text.charCodeAt(text.length - 1);
