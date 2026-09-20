@@ -8,12 +8,12 @@
   --color-canvas: #ffffff;
   /* The hover tint (header button, language pickers, Radix items): must stay light. */
   --color-surface: #f7f7f5;
-  /* The result frame alone: surface's hue and saturation (60deg, 11%) taken down to lightness 80,
+  /* The result frame alone: surface's hue and saturation (60deg, 11%) taken down to lightness 93,
      so the target pane reads as a distinct, settled surface rather than a second sheet of paper. */
-  --color-frame: #d2d2c6;
+  --color-frame: #efefeb;
   --color-ink: #37352f;
   --color-muted: #787774;
-  /* --color-muted only reaches 2.9:1 on the frame; this one is 4.7:1, so secondary text inside the
+  /* --color-muted only reaches 3.9:1 on the frame; this one is 6.3:1, so secondary text inside the
      result pane (the placeholder, Claude's note) still clears WCAG AA. */
   --color-frame-muted: #585755;
   --color-line: #d8d8d4;
