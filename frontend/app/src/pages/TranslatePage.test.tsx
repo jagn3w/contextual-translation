@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../App.tsx";
@@ -825,6 +825,32 @@ describe("TranslatePage", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(screen.getAllByText("Baseball bat.")).toHaveLength(1);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
+  it("keeps a glossed word selectable, so the translation can be copied out", async () => {
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")]),
+    );
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    const word = await screen.findByRole("button", { name: "バット" });
+
+    // jsdom has no selection to drag, so this asserts the two things a browser needs of the word.
+    // First, that its text is selectable at all: a UA stylesheet hands a control user-select: none.
+    expect(word).toHaveClass("select-text");
+
+    // Second, that a drag which happens to begin and end on it — which the browser reports as a
+    // click — finishes the selection instead of opening a card over the text being copied.
+    fireEvent.pointerDown(word, { clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(word, { clientX: 60, clientY: 12 });
+    fireEvent.click(word);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // A press and release in the same place still opens one, so the touch path pays nothing for it.
+    await user.click(word);
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 
   it("keeps the reading inside a glossed word", async () => {
