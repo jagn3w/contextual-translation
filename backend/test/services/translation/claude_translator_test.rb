@@ -176,6 +176,43 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     assert_equal [ "bat 1", "bat 2" ], glosses.map(&:meaning)
   end
 
+  test "a gloss of a space-delimited target lands on the word, not inside a longer one" do
+    translation = "Send the message before the age of consent"
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation:, notes: "",
+        glosses: [ { text: "age", reading: "", meaning: "how old someone is" },
+                   { text: "consent", reading: "", meaning: "agreement" } ])
+    )
+
+    glosses = @translator.translate(@request).glosses
+
+    assert_equal [ 28, 35 ], glosses.map(&:starts_at), "the standalone words, not the 'age' inside 'message'"
+    glosses.each { |gloss| assert_equal gloss.text, translation[gloss.starts_at, gloss.length] }
+  end
+
+  test "a gloss with no whole-word occurrence left still falls back to the raw index" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "Antidisestablishmentarianism", notes: "",
+        glosses: [ { text: "establish", reading: "", meaning: "set up" } ])
+    )
+
+    assert_equal [ 7 ], @translator.translate(@request).glosses.map(&:starts_at)
+  end
+
+  test "a Japanese gloss inside a longer run is found where it first occurs" do
+    # Japanese writes no word boundaries, so 野球 really is part of 野球部 and the first occurrence
+    # is the one meant — the whole-word search that English needs would pick the later one.
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "野球部は、野球。", notes: "",
+        glosses: [ { text: "野球", reading: "やきゅう", meaning: "baseball" } ])
+    )
+
+    gloss = @translator.translate(japanese_request).glosses.sole
+
+    assert_equal 0, gloss.starts_at
+    assert_equal "やきゅう", gloss.reading
+  end
+
   test "a gloss with a blank meaning, a blank text or the wrong shape is dropped" do
     stub_request(:post, MESSAGES_URL).to_return(
       message_response(translation: "El bate y el guante", notes: "",
@@ -196,8 +233,47 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
 
     glosses = @translator.translate(@request).glosses
 
-    assert_equal Translation::ClaudeTranslator::MAX_GLOSSES, glosses.size
+    assert_equal Translation::Prompt::MAX_GLOSSES, glosses.size
     assert_equal "word40", glosses.last.text
+  end
+
+  test "the glosses lost to the cap are counted in the log and flagged to the reader" do
+    translation = (1..50).map { |n| "word#{n}" }.join(" ")
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation:, notes: "",
+        glosses: (1..50).map { |n| { text: "word#{n}", reading: "", meaning: "number #{n}" } })
+    )
+    log = StringIO.new
+    translator = Translation::ClaudeTranslator.new(
+      client: Anthropic::Client.new(api_key: "k", max_retries: 0, timeout: 5), logger: ActiveSupport::Logger.new(log)
+    )
+
+    result = translator.translate(@request)
+
+    assert result.glosses_truncated, "the reader is told the definitions stop part way through"
+    assert_includes log.string, "Dropped 10 of 50 glosses"
+    assert_not_includes log.string, "word41", "never the words themselves (design D4.2)"
+  end
+
+  test "glosses that all fit are not flagged as truncated" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "¿Esto es un bate?", notes: "",
+        glosses: [ { text: "bate", reading: "", meaning: "bat de béisbol" } ])
+    )
+
+    result = @translator.translate(@request)
+
+    assert_equal 1, result.glosses.size
+    assert_not result.glosses_truncated
+  end
+
+  test "an entry dropped for being unusable is not a truncation" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "¿Esto es un bate?", notes: "",
+        glosses: [ { text: "murciélago", reading: "", meaning: "not in the translation" } ])
+    )
+
+    assert_not @translator.translate(@request).glosses_truncated
   end
 
   test "a malformed or missing glosses value is an empty list and the translation still comes back" do
@@ -212,10 +288,68 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     end
   end
 
+  test "a reading sent for a non-Japanese target is dropped" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "¿Esto es un bate?", notes: "",
+        glosses: [ { text: "bate", reading: "BAH-teh", meaning: "bat de béisbol" } ])
+    )
+
+    assert_nil @translator.translate(@request).glosses.sole.reading, "kana readings are the Japanese feature"
+  end
+
   test "empty notes become nil" do
     stub_request(:post, MESSAGES_URL).to_return(message_response(translation: "Hola", notes: ""))
 
     assert_nil @translator.translate(@request).notes
+  end
+
+  test "a long source asks for no annotations and keeps none that come back anyway" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "これは野球のバットですか？", notes: "Baseball.",
+        furigana: "これは野球《やきゅう》のバットですか？",
+        glosses: [ { text: "野球", reading: "やきゅう", meaning: "baseball" } ])
+    )
+    long = "あ" * (Translation::Prompt::ANNOTATION_LIMIT + 1)
+
+    result = @translator.translate(japanese_request(source_text: long))
+
+    assert_equal "これは野球のバットですか？", result.text, "the translation is what must survive"
+    assert_nil result.furigana
+    assert_empty result.glosses
+    assert_not result.glosses_truncated
+    assert_requested(:post, MESSAGES_URL) do |req|
+      assert_includes req.body, "<annotations>off</annotations>"
+      true
+    end
+  end
+
+  test "a source at the annotation limit is annotated as before" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "これは野球のバットですか？", notes: "Baseball.",
+        furigana: "これは野球《やきゅう》のバットですか？",
+        glosses: [ { text: "野球", reading: "やきゅう", meaning: "baseball" } ])
+    )
+    at_limit = "あ" * Translation::Prompt::ANNOTATION_LIMIT
+
+    result = @translator.translate(japanese_request(source_text: at_limit))
+
+    assert_equal "これは野球《やきゅう》のバットですか？", result.furigana
+    assert_equal [ "野球" ], result.glosses.map(&:text)
+    assert_requested(:post, MESSAGES_URL) do |req|
+      assert_includes req.body, "<annotations>on</annotations>"
+      true
+    end
+  end
+
+  test "the output budget fits the response shape with room to spare" do
+    # The worst annotated reply, in tokens at ~1 token per Japanese character: the translation,
+    # the furigana at ~1.6x it, and the gloss entries at ~60 characters each. The worst
+    # unannotated one is the whole source-length limit as translation. See MAX_TOKENS.
+    annotated = (Translation::Prompt::ANNOTATION_LIMIT * 2.6) + (Translation::Prompt::MAX_GLOSSES * 60)
+    unannotated = Translation::Service::MAX_SOURCE_LENGTH
+
+    assert_operator Translation::ClaudeTranslator::MAX_TOKENS, :>=, 2 * [ annotated, unannotated ].max,
+      "a long reply must have room to finish; truncation costs the reader the translation itself"
   end
 
   test "a refusal raises REFUSED" do
@@ -452,9 +586,9 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     )
   end
 
-  def japanese_request
+  def japanese_request(source_text: "Is this a bat?")
     Translation::Request.new(
-      source_text: "Is this a bat?", source_language: Translation::Language::EN,
+      source_text:, source_language: Translation::Language::EN,
       target_language: Translation::Language::JA, context: "At a baseball game"
     )
   end

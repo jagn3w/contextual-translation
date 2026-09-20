@@ -63,8 +63,14 @@ const NO_GLOSSES: readonly Gloss[] = [];
 
 /**
  * One run's text, with a reading over each run of kanji (design D2.3, design D1.4). `<ruby>` keeps
- * the translation itself as the pane's text, so what a user selects and copies is the plain
- * sentence: the 《…》 markup never reaches the DOM.
+ * the translation itself as the pane's text — the 《…》 markup never reaches the DOM — and the
+ * readings are marked `select-none`, which is what keeps them out of a copy: a browser folds `<rt>`
+ * text into a plain-text copy, so without it copying 今日は良い天気ですね would paste
+ * 今日きょうは良よい天気てんきですね into the email the user came here to write.
+ *
+ * What is guaranteed, then: a selection dragged across the pane covers the plain sentence, and the
+ * plain text on the clipboard is the translation alone. Nothing here governs a "copy as HTML" or a
+ * screenshot, which carry the ruby markup and the readings along by design.
  */
 function rubyParts(parts: readonly RubyPart[]) {
   return parts.map((part, index) =>
@@ -74,7 +80,7 @@ function rubyParts(parts: readonly RubyPart[]) {
       // The parts are a pure function of one response, so the index is a stable identity.
       <ruby key={index}>
         {part.text}
-        <rt className="text-[0.5em] text-frame-muted">{part.reading}</rt>
+        <rt className="select-none text-[0.5em] text-frame-muted">{part.reading}</rt>
       </ruby>
     ),
   );
@@ -162,14 +168,22 @@ export function TranslatePage({ onSignOut }: Props) {
         targetLanguage === translation.sourceLanguage &&
         sourceText === translation.text));
   const stale = resultText !== "" && !matchesLastResponse;
-  // Everything Claude sent *about* its answer — the notes, the readings — belongs to one response
-  // in one direction. After a swap the result pane shows the text that was translated *from*,
-  // which has none of that of its own, so the pane is plain text there.
+  // Everything Claude sent *about* its answer — the notes, the readings, the definitions — belongs
+  // to the text it answered *with*, and stays true for exactly as long as that text is on screen in
+  // the language it was written in. So the predicate keys on the pane's own text and its language,
+  // and not on the source picker: moving that picker changes nothing about the Japanese sitting
+  // there, and stripping its ruby off would lose information rather than protect anyone. After a
+  // swap the pane shows the text that was translated *from*, which has none of this of its own —
+  // the target language no longer matches, so the pane is plain text there, as before.
+  //
+  // The notes ride on the same rule rather than keeping the old full-direction test. A note is
+  // Claude's commentary on the answer that is still visible ("Baseball bat; plain form."), so
+  // hiding it would withhold a fact about text that has not changed; and two predicates for one
+  // response is a trap for whoever edits this next. That the pickers have moved on is `stale`'s
+  // job — and `stale` now says so in words, so a note read under a changed direction is read with
+  // the "Out of date" marker already beside it.
   const showingResponseOutput =
-    translation !== null &&
-    sourceLanguage === translation.sourceLanguage &&
-    targetLanguage === translation.targetLanguage &&
-    resultText === translation.text;
+    translation !== null && targetLanguage === translation.targetLanguage && resultText === translation.text;
   const responseNotes = showingResponseOutput ? translation.notes : null;
   // Null whenever the backend had no readings to give (design D2.3) — a non-Japanese target, or
   // Japanese it couldn't annotate — and the pane falls back to plain text.
@@ -177,6 +191,9 @@ export function TranslatePage({ onSignOut }: Props) {
   // Likewise the glosses: they are offsets into *this* response's text and mean nothing over any
   // other (design D2.3).
   const responseGlosses = showingResponseOutput ? translation.glosses : NO_GLOSSES;
+  // Claude stopped glossing before the translation ended, so the reader is told rather than left
+  // to conclude the untouched half of the sentence held nothing worth defining.
+  const glossesTruncated = showingResponseOutput && translation.glossesTruncated;
   // Null when there is nothing to annotate, which keeps the plain, un-wrapped text node the pane
   // has always rendered for a response with neither readings nor glosses.
   const annotated = useMemo(
@@ -250,15 +267,27 @@ export function TranslatePage({ onSignOut }: Props) {
           fromContext: sent.context,
           fromGlossLevel: sent.glossLevel,
         });
-        // Throw out the dirty buffers on both sides of the pair: after a response both languages
-        // are clean, so an immediate swap hands back an editable copy of the translation with the
-        // text it came from waiting in the other pane. The third language keeps what it held.
-        setBuffers((current) =>
-          withBuffer(withBuffer(current, sent.source, { input: sent.text, target: sent.text }), sent.target, {
+        // Settle both sides of the pair, so an immediate swap hands back an editable copy of the
+        // translation with the text it came from waiting in the other pane. The third language
+        // keeps what it held.
+        setBuffers((current) => {
+          // The source's `input` is left exactly as it stands, which resets it only in the case
+          // where resetting is a no-op. Nothing typed during the request → it is already
+          // `sent.text`, clean, and the swap above is exact. Something typed → it is a draft, and
+          // the box was editable the whole 5–20s the call took, so people do type there; writing
+          // `sent.text` back over it would destroy that work silently and with no undo, the
+          // <textarea> being controlled. The result then reads as out of date beside the draft,
+          // which is precisely what it is. So: never overwrite a changed source box.
+          //
+          // `target` is not a draft but a record of the text of this language Claude has now seen,
+          // and the far side keeps its unconditional write of both: that pane is read-only, so
+          // nothing can have been typed into it while the request was in flight.
+          const source = current[sent.source];
+          return withBuffer(withBuffer(current, sent.source, { input: source.input, target: sent.text }), sent.target, {
             input: result.text,
             target: result.text,
-          }),
-        );
+          });
+        });
         setAnnouncement("Translation ready.");
       } else if (error !== undefined) {
         // Typed, anticipated failures (design D3.3): one message per code. Try again is offered
@@ -358,8 +387,11 @@ export function TranslatePage({ onSignOut }: Props) {
                 </div>
               </div>
 
+              {/* Out of date is said by the ground and by a marker, never by dimming the ink: a
+                  blanket opacity over the darkened frame composited the translation to 3.5:1,
+                  under WCAG AA. On bg-frame-stale the text is unchanged at 9.6:1 (design D1.4). */}
               <div
-                className={`min-h-72 border-t border-line bg-frame px-5 py-4 md:border-t-0 ${stale ? "opacity-60" : ""}`}
+                className={`min-h-72 border-t border-line px-5 py-4 md:border-t-0 ${stale ? "bg-frame-stale" : "bg-frame"}`}
                 aria-label="Translation result"
                 aria-busy={loading}
                 role="region"
@@ -375,6 +407,11 @@ export function TranslatePage({ onSignOut }: Props) {
                   <p className="text-lg text-frame-muted">Translation</p>
                 ) : (
                   <>
+                    {stale && (
+                      // Named, not merely shaded: the tint alone is easy to miss, and "the text is
+                      // greyed out" is exactly the misreading the old blanket opacity invited.
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-frame-muted">Out of date</p>
+                    )}
                     {/* Ruby needs room above each line for the readings, so annotated text gets
                         looser leading than the plain paragraph, which keeps its usual rhythm. */}
                     <p className={`whitespace-pre-wrap text-lg ${responseFurigana === null ? "leading-relaxed" : "leading-loose"}`}>
@@ -391,6 +428,11 @@ export function TranslatePage({ onSignOut }: Props) {
                             ),
                           )}
                     </p>
+                    {glossesTruncated && (
+                      <p className="mt-4 text-xs text-frame-muted">
+                        Definitions stop partway: this translation has more words than one response can carry.
+                      </p>
+                    )}
                     {responseNotes && (
                       <p className="mt-4 border-t border-ink/10 pt-3 text-sm text-frame-muted">
                         <span className="font-medium text-ink/80">Note: </span>

@@ -11,6 +11,7 @@ mutation Translate($input: TranslateInput!) {
         startsAt
         length
       }
+      glossesTruncated
       sourceLanguage
       targetLanguage
     }

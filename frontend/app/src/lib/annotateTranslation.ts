@@ -107,7 +107,7 @@ export function annotateTranslation(
   const segments = placedSegments(text, furigana);
 
   // Every part each segment contributed, in order, so a segment a gloss boundary cut in two can
-  // hand its reading to the piece that kept the kanji once the cutting is done.
+  // decide what becomes of its reading once the cutting is done.
   const piecesOf: RubyPart[][] = segments.map(() => []);
   const runs: AnnotatedRun[] = [];
   for (const span of spansOf(glosses, length)) {
@@ -125,14 +125,24 @@ export function annotateTranslation(
     runs.push(span.gloss === undefined ? { parts } : { parts, gloss: span.gloss });
   }
 
-  // A reading is only right over the kanji it was measured against, so a split segment gives it to
-  // the first piece that still holds kanji — never half a reading over each half, and never an
-  // invented reading for the other piece. An unsplit segment has one piece and simply keeps it.
+  // A reading is only right over the kanji it was measured against. An unsplit segment has one
+  // piece and simply keeps it; a split one has three cases:
+  //   - exactly one piece kept kanji (天気 cut as 天|気です after a kana boundary, or 良い as 良|い):
+  //     that piece is what the reading was measured against, so it carries it;
+  //   - no piece kept kanji — the fake translator's "[JA]《ジェイエー》" (design D2.4), whose base is
+  //     "]" — so the first piece carries it, exactly as the unsplit segment would have;
+  //   - more than one piece kept kanji (東京駅《とうきょうえき》 glossed as 東京, cut 東京|駅): the
+  //     reading belongs to the compound, not to either half, and there is no honest way to divide
+  //     it. Giving it to the first piece would teach the reader that 東京 reads とうきょうえき, so
+  //     the reading is dropped and both pieces render plain. A missing reading is a gap; a wrong
+  //     one is a lie, and this pane is what someone is learning the word from.
   segments.forEach((segment, index) => {
     const reading = segment.reading;
     if (reading === undefined) return;
     const pieces = piecesOf[index] ?? [];
-    const carrier = pieces.find((piece) => hasKanji(piece.text)) ?? pieces[0];
+    const withKanji = pieces.filter((piece) => hasKanji(piece.text));
+    if (withKanji.length > 1) return;
+    const carrier = withKanji[0] ?? pieces[0];
     if (carrier !== undefined) carrier.reading = reading;
   });
 

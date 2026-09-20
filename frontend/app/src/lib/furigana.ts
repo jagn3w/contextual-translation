@@ -9,10 +9,17 @@
 export type RubySegment = { text: string; reading?: string };
 
 /**
- * What a reading may be written over: CJK Unified Ideographs and Extension A, plus the marks that
- * only ever appear inside a kanji word — 々 (repeat), 〆 (shime) and ヶ (as in 三ヶ月).
+ * What a reading may be written over. A character left out of this class ends the run early, so the
+ * reading after it lands over the wrong base (一ヵ月《いっかげつ》 would put いっかげつ over 月 alone),
+ * which is why the class covers every block real Japanese puts under a reading:
+ *   - CJK Unified Ideographs (一-鿿) and Extension A (㐀-䶿);
+ *   - the compatibility ideographs (U+F900–U+FAFF), where the 﨑 of a name like 宮﨑 lives;
+ *   - the astral extensions, B through the compatibility supplement (U+20000–U+2FA1F) — 𠮟, 𩸽 and
+ *     most rare surname characters. The `u` flag is what makes this range match by code point;
+ *   - the marks that only ever appear inside a kanji word: 〇 (the zero of 〇〇), 々 (repeat),
+ *     〆 (shime) and the small ヵ/ヶ of 一ヵ月 / 三ヶ月.
  */
-const KANJI = /[々〆ヶ㐀-䶿一-鿿]/u;
+const KANJI = /[〇々〆ヵヶ㐀-䶿一-鿿\uF900-\uFAFF\u{20000}-\u{2FA1F}]/u;
 /** The same class as a run, anchored: a reading sits over the kanji immediately before it. */
 const KANJI_RUN = new RegExp(`${KANJI.source}+$`, "u");
 /** A reading group. The reading itself never contains a bracket, so it can't swallow the next one. */

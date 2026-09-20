@@ -10,7 +10,20 @@ module Translation
 
     DEFAULT_MODEL = "claude-opus-5"
     DEFAULT_EFFORT = "medium"
-    MAX_TOKENS = 16_000
+    # The output budget for one reply. The reply is the translation, plus — when the source is
+    # short enough to annotate (Prompt::ANNOTATION_LIMIT) — the furigana, which is the translation
+    # over again with readings at ~1.6x its length, plus up to Prompt::MAX_GLOSSES gloss entries,
+    # plus the notes. Counting a Japanese character as ~1 token, the two worst cases are:
+    #   annotated, at the 2,000-character annotation limit:
+    #     2,000 (translation) + 3,200 (1.6 x furigana) + 40 x ~60 chars (glosses) + ~100 (notes)
+    #     ≈ 7,700 tokens
+    #   unannotated, at the 10,000-character source limit (Service::MAX_SOURCE_LENGTH):
+    #     10,000 (translation) + ~100 (notes) ≈ 10,100 tokens
+    # 32,000 is the larger of the two roughly tripled, which leaves room for JSON escaping and for
+    # the kanji that cost more than a token each. It is a ceiling, not a target: the reply still
+    # has to arrive inside the 30 s SDK timeout and the 55 s deadline, and keeping it inside those
+    # is Prompt::ANNOTATION_LIMIT's job, not this number's (design D2.2).
+    MAX_TOKENS = 32_000
     # Server-side refusal fallbacks: if the model declines, Anthropic retries on a substitute
     # model chosen by refusal category.
     FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -23,8 +36,9 @@ module Translation
     # Furigana notation: a reading in double angle brackets follows the run of kanji it reads,
     # 漢字《かんじ》 (design D2.3).
     FURIGANA_READING = /《[^》]*》/
-    # At most this many glosses reach the UI, matching the cap the prompt states (design D2.3).
-    MAX_GLOSSES = 40
+    # A character that counts as part of a word when deciding whether a gloss's text sits inside a
+    # longer one. Unicode-aware, so it covers accented Spanish as well as English.
+    WORD_CHARACTER = /[[:word:]]/
 
     sig do
       params(
@@ -187,10 +201,11 @@ module Translation
 
       fields = T.cast(parsed, T::Hash[String, T.untyped])
       notes = fields["notes"]
+      glosses, glosses_truncated = glosses_from(fields["glosses"], translation, request)
       Result.new(
         text: translation, notes: notes.is_a?(String) ? notes.presence : nil,
         furigana: furigana_from(fields["furigana"], translation, request),
-        glosses: glosses_from(fields["glosses"], translation, request), model: message.model.to_s
+        glosses:, glosses_truncated:, model: message.model.to_s
       )
     end
 
@@ -200,6 +215,7 @@ module Translation
     # at all) becomes nil and the UI shows plain text.
     sig { params(value: T.untyped, translation: String, request: Request).returns(T.nilable(String)) }
     def furigana_from(value, translation, request)
+      return nil unless Prompt.annotations?(request)
       return nil unless request.target_language == Language::JA
       return nil unless value.is_a?(String) && value.match?(FURIGANA_READING)
       return value if value.gsub(FURIGANA_READING, "") == translation
@@ -216,19 +232,33 @@ module Translation
     # and the spans in order and non-overlapping. Entries that don't fit — not a string, not in
     # the translation any more, no meaning — are dropped one by one; a malformed list is simply
     # no glosses. The translation still comes back either way: hover definitions are a bonus.
-    sig { params(value: T.untyped, translation: String, request: Request).returns(T::Array[Gloss]) }
+    # Returns the glosses and whether the cap threw any away, which the UI says out loud: a
+    # reader whose definitions stop half way through the translation should know they were cut
+    # off rather than think the rest was not worth glossing.
+    sig do
+      params(value: T.untyped, translation: String, request: Request)
+        .returns([ T::Array[Gloss], T::Boolean ])
+    end
     def glosses_from(value, translation, request)
-      # The reader asked for none, so nothing Claude sent is wanted — don't even look at it.
-      return [] if request.gloss_level == GlossLevel::NONE
-      return [] unless value.is_a?(Array)
+      # The reader asked for none, or the source was too long to annotate at all, so nothing
+      # Claude sent is wanted — don't even look at it.
+      return [ [], false ] if request.gloss_level == GlossLevel::NONE || !Prompt.annotations?(request)
+      return [ [], false ] unless value.is_a?(Array)
 
       cursor = 0
       dropped = 0
+      truncated = 0
       glosses = T.let([], T::Array[Gloss])
-      value.each do |entry|
-        break if glosses.size >= MAX_GLOSSES
+      value.each_with_index do |entry, index|
+        if glosses.size >= Prompt::MAX_GLOSSES
+          # Everything still in the list is over the cap and is being thrown away just as surely
+          # as an entry we couldn't place, so count it: the log said "dropped N" and left these
+          # out, which undercounted the loss every time Claude overran the cap.
+          truncated = value.size - index
+          break
+        end
 
-        gloss = gloss_from(entry, translation, cursor)
+        gloss = gloss_from(entry, translation, cursor, request)
         if gloss.nil?
           dropped += 1
           next
@@ -237,26 +267,67 @@ module Translation
         glosses << gloss
       end
       # Never log the words themselves: they are the user's text (design D4.2).
-      @logger.debug("Dropped #{dropped} of #{value.size} glosses Claude returned") if dropped.positive?
-      glosses
+      if (lost = dropped + truncated).positive?
+        @logger.debug("Dropped #{lost} of #{value.size} glosses Claude returned " \
+                      "(#{truncated} of them over the #{Prompt::MAX_GLOSSES} cap)")
+      end
+      [ glosses, truncated.positive? ]
     end
 
     # nil for anything unusable. Offsets count Unicode code points, which is what String#index
     # and String#length return, and what the UI counts too.
-    sig { params(entry: T.untyped, translation: String, cursor: Integer).returns(T.nilable(Gloss)) }
-    def gloss_from(entry, translation, cursor)
+    sig do
+      params(entry: T.untyped, translation: String, cursor: Integer, request: Request)
+        .returns(T.nilable(Gloss))
+    end
+    def gloss_from(entry, translation, cursor, request)
       return nil unless entry.is_a?(Hash)
 
       text = entry["text"]
       meaning = entry["meaning"]
       return nil unless text.is_a?(String) && !text.empty? && meaning.is_a?(String) && meaning.present?
 
-      starts_at = translation.index(text, cursor)
+      starts_at = locate(text, translation, cursor, request)
       return nil if starts_at.nil?
 
-      reading = entry["reading"]
+      # Kana readings are the Japanese feature; for any other target whatever Claude put in
+      # "reading" is not one, so it doesn't travel (see Gloss#reading).
+      reading = request.target_language == Language::JA ? entry["reading"] : nil
       Gloss.new(text:, reading: reading.is_a?(String) ? reading.presence : nil, meaning:,
         starts_at:, length: text.length)
+    end
+
+    # Where to underline the gloss: the first occurrence at or after `cursor`. In a space-delimited
+    # target that has to be a whole word — a gloss of "age" belongs to "the age of consent", not to
+    # the "age" inside "message", and pinning it to the wrong one underlines the wrong characters
+    # and pushes the cursor past the real word, dropping the glosses that follow. Japanese writes
+    # no boundaries, so a gloss there is legitimately inside a longer run and plain substring
+    # search is the only thing that can be meant (design D2.3). If no whole-word occurrence is
+    # left, the raw index still beats losing the entry.
+    sig { params(text: String, translation: String, cursor: Integer, request: Request).returns(T.nilable(Integer)) }
+    def locate(text, translation, cursor, request)
+      raw = translation.index(text, cursor)
+      return raw unless request.target_language.space_delimited?
+
+      whole_word_index(text, translation, cursor) || raw
+    end
+
+    # The first occurrence at or after `from` with no word character against either end.
+    sig { params(text: String, translation: String, from: Integer).returns(T.nilable(Integer)) }
+    def whole_word_index(text, translation, from)
+      at = T.let(translation.index(text, from), T.nilable(Integer))
+      while at
+        before = at.zero? ? nil : translation[at - 1]
+        return at unless word_character?(before) || word_character?(translation[at + text.length])
+
+        at = translation.index(text, at + 1)
+      end
+      nil
+    end
+
+    sig { params(character: T.nilable(String)).returns(T::Boolean) }
+    def word_character?(character)
+      !character.nil? && character.match?(WORD_CHARACTER)
     end
 
     sig { params(message: Anthropic::Models::Beta::BetaMessage, started: Float).void }

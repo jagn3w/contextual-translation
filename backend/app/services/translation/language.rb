@@ -11,6 +11,18 @@ module Translation
       JA = new("ja")
     end
 
+    # Whether the language marks word boundaries with spaces. It does not for Japanese, where a
+    # word is legitimately a substring of a longer run of characters, so a gloss can only be
+    # located by plain substring search there (design D2.3).
+    sig { returns(T::Boolean) }
+    def space_delimited?
+      case self
+      when EN, ES then true
+      when JA then false
+      else T.absurd(self)
+      end
+    end
+
     sig { returns(String) }
     def english_name
       case self

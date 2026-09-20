@@ -12,8 +12,7 @@ module Translation
 
     sig { override.params(request: Request).returns(Result) }
     def translate(request)
-      tag = request.target_language.serialize.upcase
-      text = "[#{tag}] #{request.source_text}"
+      text = "#{tag(request)} #{request.source_text}"
       notes = request.context.present? ? "Fake translation using context: #{request.context}" : nil
       # One annotation on the tag, so the dev and test paths exercise ruby rendering. It still
       # strips back to `text` exactly, which is what ClaudeTranslator requires of the real thing.
@@ -23,24 +22,49 @@ module Translation
 
     private
 
-    # Two glosses for a Japanese target, so the dev path and the frontend's fixtures show hover
-    # definitions: the language tag, and the last word of the fake translation. Both spans are
-    # located in `text` — the second after the end of the first, the way ClaudeTranslator locates
-    # Claude's — so they really are substrings of it and never overlap, rather than hand-counted
-    # offsets that would drift the moment the fake translation changed.
+    # The fake honours <gloss_level> so the dev and CI paths exercise the picker instead of
+    # showing the same list whatever the reader chose — the gate can only test the feature if the
+    # translator it runs has it (design D2.4). Every target gets glosses, not just Japanese, so
+    # the space-delimited spans ClaudeTranslator has to locate by word boundary are exercised too.
     sig { params(text: String, request: Request).returns(T::Array[Gloss]) }
     def glosses_for(text, request)
-      return [] unless request.target_language == Language::JA
+      level = request.gloss_level
+      words =
+        case level
+        when GlossLevel::NONE then []
+        # A couple of entries, standing in for "the ones worth remarking on": the language tag
+        # and the last word of the fake translation.
+        when GlossLevel::NOTABLE then [ tag(request), T.must(text.split.last) ].uniq
+        # Every word, which is visibly more than NOTABLE for anything but a one-word source.
+        when GlossLevel::EVERY then text.split
+        else T.absurd(level)
+        end
+      glosses_at(words, text, request)
+    end
 
-      tag = "[#{Language::JA.serialize.upcase}]"
-      glosses = [ Gloss.new(text: tag, reading: "ジェイエー", meaning: "fake target-language tag",
-        starts_at: 0, length: tag.length) ]
-      last_word = T.must(text.split.last)
-      last_at = text.index(last_word, tag.length)
-      return glosses if last_at.nil?
+    # Spans are located in `text` with a cursor — the way ClaudeTranslator locates Claude's, each
+    # after the end of the previous — so they really are substrings of it and never overlap,
+    # rather than hand-counted offsets that would drift the moment the fake translation changed.
+    sig { params(words: T::Array[String], text: String, request: Request).returns(T::Array[Gloss]) }
+    def glosses_at(words, text, request)
+      cursor = 0
+      words.filter_map do |word|
+        starts_at = text.index(word, cursor)
+        next if starts_at.nil?
 
-      glosses << Gloss.new(text: last_word, reading: nil, meaning: "fake gloss of the last word",
-        starts_at: last_at, length: last_word.length)
+        cursor = starts_at + word.length
+        is_tag = word == tag(request)
+        Gloss.new(
+          text: word, meaning: is_tag ? "fake target-language tag" : "fake definition of #{word}",
+          reading: is_tag && request.target_language == Language::JA ? "ジェイエー" : nil,
+          starts_at:, length: word.length
+        )
+      end
+    end
+
+    sig { params(request: Request).returns(String) }
+    def tag(request)
+      "[#{request.target_language.serialize.upcase}]"
     end
   end
 end

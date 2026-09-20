@@ -23,12 +23,22 @@ function translated(
   targetLanguage = "JA",
   furigana: string | null = null,
   glosses: ReturnType<typeof gloss>[] = [],
+  glossesTruncated = false,
 ) {
   return json({
     data: {
       translate: {
         __typename: "TranslatePayload",
-        translation: { __typename: "Translation", text, notes, furigana, glosses, sourceLanguage, targetLanguage },
+        translation: {
+          __typename: "Translation",
+          text,
+          notes,
+          furigana,
+          glosses,
+          glossesTruncated,
+          sourceLanguage,
+          targetLanguage,
+        },
         errors: [],
       },
     },
@@ -40,11 +50,32 @@ function readings(pane: HTMLElement): string[] {
   return [...pane.querySelectorAll("rt")].map((rt) => rt.textContent ?? "");
 }
 
-/** What the pane reads as without the readings — the plain translation, which is what is copied. */
+/**
+ * The pane's text with the readings taken out — the translation underneath the ruby. This is *not*
+ * a model of a copy: a browser folds `<rt>` text into a plain-text copy, which is the whole reason
+ * the readings carry `select-none` (asserted on the elements themselves, where a browser reads it).
+ */
 function textWithoutReadings(pane: HTMLElement): string {
   const copy = pane.cloneNode(true) as HTMLElement;
   for (const rt of copy.querySelectorAll("rt")) rt.remove();
   return copy.textContent ?? "";
+}
+
+/**
+ * How the pane says its contents are out of date: a dimmed ground and a named marker. Never by
+ * dimming the ink — a blanket opacity over the frame put the translation under WCAG AA — so these
+ * also assert that the old `opacity-60` has not come back.
+ */
+function expectOutOfDate(result: HTMLElement) {
+  expect(result).toHaveClass("bg-frame-stale");
+  expect(result).not.toHaveClass("opacity-60");
+  expect(within(result).getByText("Out of date")).toBeInTheDocument();
+}
+
+function expectUpToDate(result: HTMLElement) {
+  expect(result).toHaveClass("bg-frame");
+  expect(result).not.toHaveClass("opacity-60");
+  expect(within(result).queryByText("Out of date")).not.toBeInTheDocument();
 }
 
 /** Picks a language from one of the two pickers (Radix Select; jsdom can't fire its pointer events). */
@@ -133,6 +164,11 @@ describe("TranslatePage", () => {
     // The translation itself is still the pane's text: the 《…》 markup never reaches the DOM.
     expect(textWithoutReadings(result)).toBe("今日は良い天気ですね");
     expect(result.textContent).not.toContain("《");
+    // A plain-text copy would otherwise carry the readings with it — 今日きょうは良よい天気てんき
+    // ですね — straight into whatever the user is writing. select-none is what stops that.
+    const annotations = [...result.querySelectorAll<HTMLElement>("rt")];
+    expect(annotations).toHaveLength(3);
+    for (const rt of annotations) expect(rt).toHaveClass("select-none");
   });
 
   it("renders plain text when there are no readings to show", async () => {
@@ -145,6 +181,29 @@ describe("TranslatePage", () => {
     const result = screen.getByRole("region", { name: "Translation result" });
     expect(await within(result).findByText("Hola")).toBeInTheDocument();
     expect(result.querySelectorAll("ruby")).toHaveLength(0);
+  });
+
+  it("says so when the definitions ran out before the translation did", async () => {
+    server.onGraphql("Translate", () => translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")], true));
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(await within(result).findByText(/Definitions stop partway/)).toBeInTheDocument();
+  });
+
+  it("says nothing about definitions when none were dropped", async () => {
+    server.onGraphql("Translate", () => translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")]));
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(await within(result).findByRole("button", { name: "バット" })).toBeInTheDocument();
+    expect(within(result).queryByText(/Definitions stop partway/)).not.toBeInTheDocument();
   });
 
   it("drops the readings after a swap, where the pane holds the text Claude translated from", async () => {
@@ -224,7 +283,7 @@ describe("TranslatePage", () => {
     expect(source).toHaveValue("Hello");
     expect(within(result).getByText("こんにちは")).toBeInTheDocument();
     expect(within(result).getByText("Plain form.")).toBeInTheDocument();
-    expect(result).not.toHaveClass("opacity-60");
+    expectUpToDate(result);
     expect(screen.getByRole("combobox", { name: "Source language" })).toHaveTextContent("English");
     expect(screen.getByRole("combobox", { name: "Target language" })).toHaveTextContent("Japanese");
   });
@@ -285,7 +344,19 @@ describe("TranslatePage", () => {
     const result = screen.getByRole("region", { name: "Translation result" });
     expect(source).toHaveValue("Goodbye");
     expect(within(result).getByText("さようなら")).toBeInTheDocument();
-    expect(result).not.toHaveClass("opacity-60");
+    expectUpToDate(result);
+  });
+
+  it("puts each picker's label on an element that can actually truncate", async () => {
+    await renderSignedIn();
+
+    // Radix's Select.Value destructures `className` away and never applies it, so a truncation
+    // class written there is invisible to the browser. Assert it where the browser would read it.
+    for (const picker of ["Source language", "Target language", "Definitions"]) {
+      const label = screen.getByRole("combobox", { name: picker }).querySelector<HTMLElement>(".truncate");
+      expect(label).not.toBeNull();
+      expect(label?.textContent ?? "").not.toBe("");
+    }
   });
 
   it("picking the other pane's language swaps them instead of allowing a same-language pair", async () => {
@@ -504,7 +575,7 @@ describe("TranslatePage", () => {
     await pickLanguage(user, "Target language", /Japanese/);
 
     expect(screen.getByText("こんにちは")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Translation result" })).not.toHaveClass("opacity-60");
+    expectUpToDate(screen.getByRole("region", { name: "Translation result" }));
   });
 
   it("blocks text over the limit with a visible reason instead of truncating it", async () => {
@@ -560,7 +631,7 @@ describe("TranslatePage", () => {
 
     await user.clear(source);
     await user.type(source, "A new paragraph I haven't translated");
-    expect(screen.getByRole("region", { name: "Translation result" })).toHaveClass("opacity-60");
+    expectOutOfDate(screen.getByRole("region", { name: "Translation result" }));
 
     // The draft stays with English: swapping shows Japanese's text, swapping back brings it back.
     await user.click(screen.getByRole("button", { name: "Swap languages" }));
@@ -571,7 +642,62 @@ describe("TranslatePage", () => {
     await user.click(screen.getByRole("button", { name: "Swap languages" }));
 
     expect(source).toHaveValue("A new paragraph I haven't translated");
-    expect(screen.getByRole("region", { name: "Translation result" })).toHaveClass("opacity-60");
+    expectOutOfDate(screen.getByRole("region", { name: "Translation result" }));
+  });
+
+  it("keeps a draft typed while the request was in flight", async () => {
+    let respond: (response: Response) => void = () => undefined;
+    server.onGraphql("Translate", () => new Promise<Response>((resolve) => (respond = resolve)));
+    const user = await renderSignedIn();
+    const source = screen.getByLabelText("Text to translate");
+    await user.type(source, "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    // The box stays editable for the 5-20s Claude takes, and people use that time. Writing the
+    // text that was *sent* back over the box would destroy that work, with no undo to recover it.
+    await user.type(source, " I mean the animal.");
+    respond(translated("これはバットですか？", null));
+
+    expect(await screen.findByText("これはバットですか？")).toBeInTheDocument();
+    expect(source).toHaveValue("Is this a bat? I mean the animal.");
+    // The translation is real but answers the older text, so the pane says so rather than
+    // pretending the pair on screen is what Claude was asked about.
+    expectOutOfDate(screen.getByRole("region", { name: "Translation result" }));
+  });
+
+  it("resets an untouched source box when the response lands, so a swap is clean", async () => {
+    server.onGraphql("Translate", () => translated("こんにちは", null));
+    const user = await renderSignedIn();
+    const source = screen.getByLabelText("Text to translate");
+    await user.type(source, "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    await screen.findByText("こんにちは");
+
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expectUpToDate(result);
+    await user.click(screen.getByRole("button", { name: "Swap languages" }));
+
+    expect(source).toHaveValue("こんにちは");
+    expect(within(result).getByText("Hello")).toBeInTheDocument();
+  });
+
+  it("keeps the readings and the note when only the source picker moves", async () => {
+    server.onGraphql("Translate", () =>
+      translated("今日は良い天気ですね", "Plain form.", "EN", "JA", "今日《きょう》は良《よ》い天気《てんき》ですね"),
+    );
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Nice weather today");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    const result = screen.getByRole("region", { name: "Translation result" });
+    await waitFor(() => expect(result.querySelectorAll("ruby")).toHaveLength(3));
+
+    await pickLanguage(user, "Source language", /Spanish/);
+
+    // The Japanese in the pane is untouched, so what Claude said about it is still true of it.
+    expect(readings(result)).toEqual(["きょう", "よ", "てんき"]);
+    expect(within(result).getByText("Plain form.")).toBeInTheDocument();
+    // That the pickers have moved on is what the out-of-date marker is for.
+    expectOutOfDate(result);
   });
 
   it("editing the context marks the result out of date", async () => {
@@ -581,11 +707,11 @@ describe("TranslatePage", () => {
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
     await screen.findByText("こんにちは");
     const result = screen.getByRole("region", { name: "Translation result" });
-    expect(result).not.toHaveClass("opacity-60");
+    expectUpToDate(result);
 
     await user.type(screen.getByLabelText("Context"), "At a baseball game");
 
-    expect(result).toHaveClass("opacity-60");
+    expectOutOfDate(result);
   });
 
   it("announces the result through an always-mounted live region", async () => {
@@ -741,12 +867,12 @@ describe("TranslatePage", () => {
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
     await screen.findByText("こんにちは");
     const result = screen.getByRole("region", { name: "Translation result" });
-    expect(result).not.toHaveClass("opacity-60");
+    expectUpToDate(result);
 
     // Claude chooses the words and writes the definitions, so a new level needs a new answer.
     await pickGlossLevel(user, /^All$/);
 
-    expect(result).toHaveClass("opacity-60");
+    expectOutOfDate(result);
   });
 
   it("translates under StrictMode (dev mounts, unmounts and remounts every component)", async () => {

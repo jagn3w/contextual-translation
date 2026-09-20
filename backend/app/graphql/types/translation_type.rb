@@ -13,6 +13,9 @@ module Types
     field :glosses, [ Types::GlossType ], null: false,
       description: "Words of `text` worth defining, in the order they appear in it, with " \
                    "non-overlapping spans. Empty when there is nothing to gloss."
+    field :glosses_truncated, Boolean, null: false,
+      description: "True when Claude offered more glosses than the cap allows and the extras were dropped, so " \
+                   "`glosses` runs out before the end of `text`. False when `glosses` is everything there was."
     field :source_language, Types::LanguageType, null: false
     field :target_language, Types::LanguageType, null: false
   end

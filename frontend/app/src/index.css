@@ -11,6 +11,12 @@
   /* The result frame alone: surface's hue and saturation (60deg, 11%) taken down to lightness 93,
      so the target pane reads as a distinct, settled surface rather than a second sheet of paper. */
   --color-frame: #efefeb;
+  /* The same frame four steps darker (lightness 89) for a result that is out of date. Staleness is
+     carried by the ground and by a named "Out of date" marker, never by dimming the ink: on this
+     background --color-ink is 9.6:1 and --color-frame-muted 5.7:1, both clear of WCAG AA. The
+     blanket opacity-60 this replaces composited the translation itself to 3.5:1 and Claude's note
+     to 2.6:1 — under AA, and getting worse each time the frame was darkened. */
+  --color-frame-stale: #e4e4de;
   --color-ink: #37352f;
   --color-muted: #787774;
   /* --color-muted only reaches 3.9:1 on the frame; this one is 6.3:1, so secondary text inside the

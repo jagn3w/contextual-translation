@@ -14,11 +14,11 @@ import type { TypedDocumentNode as DocumentNode } from '@graphql-typed-document-
  * Learn more about it here: https://the-guild.dev/graphql/codegen/plugins/presets/preset-client#reducing-bundle-size
  */
 type Documents = {
-    "mutation Translate($input: TranslateInput!) {\n  translate(input: $input) {\n    translation {\n      text\n      notes\n      furigana\n      glosses {\n        text\n        reading\n        meaning\n        startsAt\n        length\n      }\n      sourceLanguage\n      targetLanguage\n    }\n    errors {\n      code\n      message\n      retryable\n      retryAfterSeconds\n    }\n  }\n}": typeof types.TranslateDocument,
+    "mutation Translate($input: TranslateInput!) {\n  translate(input: $input) {\n    translation {\n      text\n      notes\n      furigana\n      glosses {\n        text\n        reading\n        meaning\n        startsAt\n        length\n      }\n      glossesTruncated\n      sourceLanguage\n      targetLanguage\n    }\n    errors {\n      code\n      message\n      retryable\n      retryAfterSeconds\n    }\n  }\n}": typeof types.TranslateDocument,
     "query Viewer {\n  viewer {\n    accessCodeLabel\n    accessCodeExpiresAt\n    sessionExpiresAt\n  }\n}": typeof types.ViewerDocument,
 };
 const documents: Documents = {
-    "mutation Translate($input: TranslateInput!) {\n  translate(input: $input) {\n    translation {\n      text\n      notes\n      furigana\n      glosses {\n        text\n        reading\n        meaning\n        startsAt\n        length\n      }\n      sourceLanguage\n      targetLanguage\n    }\n    errors {\n      code\n      message\n      retryable\n      retryAfterSeconds\n    }\n  }\n}": types.TranslateDocument,
+    "mutation Translate($input: TranslateInput!) {\n  translate(input: $input) {\n    translation {\n      text\n      notes\n      furigana\n      glosses {\n        text\n        reading\n        meaning\n        startsAt\n        length\n      }\n      glossesTruncated\n      sourceLanguage\n      targetLanguage\n    }\n    errors {\n      code\n      message\n      retryable\n      retryAfterSeconds\n    }\n  }\n}": types.TranslateDocument,
     "query Viewer {\n  viewer {\n    accessCodeLabel\n    accessCodeExpiresAt\n    sessionExpiresAt\n  }\n}": types.ViewerDocument,
 };
 
@@ -39,7 +39,7 @@ export function graphql(source: string): unknown;
 /**
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */
-export function graphql(source: "mutation Translate($input: TranslateInput!) {\n  translate(input: $input) {\n    translation {\n      text\n      notes\n      furigana\n      glosses {\n        text\n        reading\n        meaning\n        startsAt\n        length\n      }\n      sourceLanguage\n      targetLanguage\n    }\n    errors {\n      code\n      message\n      retryable\n      retryAfterSeconds\n    }\n  }\n}"): (typeof documents)["mutation Translate($input: TranslateInput!) {\n  translate(input: $input) {\n    translation {\n      text\n      notes\n      furigana\n      glosses {\n        text\n        reading\n        meaning\n        startsAt\n        length\n      }\n      sourceLanguage\n      targetLanguage\n    }\n    errors {\n      code\n      message\n      retryable\n      retryAfterSeconds\n    }\n  }\n}"];
+export function graphql(source: "mutation Translate($input: TranslateInput!) {\n  translate(input: $input) {\n    translation {\n      text\n      notes\n      furigana\n      glosses {\n        text\n        reading\n        meaning\n        startsAt\n        length\n      }\n      glossesTruncated\n      sourceLanguage\n      targetLanguage\n    }\n    errors {\n      code\n      message\n      retryable\n      retryAfterSeconds\n    }\n  }\n}"): (typeof documents)["mutation Translate($input: TranslateInput!) {\n  translate(input: $input) {\n    translation {\n      text\n      notes\n      furigana\n      glosses {\n        text\n        reading\n        meaning\n        startsAt\n        length\n      }\n      glossesTruncated\n      sourceLanguage\n      targetLanguage\n    }\n    errors {\n      code\n      message\n      retryable\n      retryAfterSeconds\n    }\n  }\n}"];
 /**
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */

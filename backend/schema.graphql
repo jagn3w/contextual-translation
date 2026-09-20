@@ -215,6 +215,13 @@ type Translation {
   glosses: [Gloss!]!
 
   """
+  True when Claude offered more glosses than the cap allows and the extras were
+  dropped, so `glosses` runs out before the end of `text`. False when `glosses`
+  is everything there was.
+  """
+  glossesTruncated: Boolean!
+
+  """
   Claude's note on the meaning, formality and regional variety it chose.
   """
   notes: String

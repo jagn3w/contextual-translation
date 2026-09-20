@@ -13,6 +13,10 @@ module Translation
     # The words of the translation worth defining, in the order they appear in it, each with the
     # span it occupies. Empty when there is nothing to gloss — never nil.
     const :glosses, T::Array[Gloss], default: [].freeze
+    # True when `glosses` is short of what was on offer because the cap (Prompt::MAX_GLOSSES) cut
+    # the list off, so the UI can say the definitions stop part way through rather than let the
+    # reader read the silence as "nothing else was worth glossing".
+    const :glosses_truncated, T::Boolean, default: false
     const :model, String
   end
 end

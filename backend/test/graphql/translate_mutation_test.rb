@@ -7,7 +7,7 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
     mutation Translate($input: TranslateInput!) {
       translate(input: $input) {
         translation {
-          text notes furigana sourceLanguage targetLanguage
+          text notes furigana glossesTruncated sourceLanguage targetLanguage
           glosses { text reading meaning startsAt length }
         }
         errors { code message retryable retryAfterSeconds }
@@ -38,7 +38,13 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
           "text" => "[ES] Is this a bat?",
           "notes" => "Fake translation using context: Baseball game",
           "furigana" => nil,
-          "glosses" => [],
+          "glossesTruncated" => false,
+          "glosses" => [
+            { "text" => "[ES]", "reading" => nil, "meaning" => "fake target-language tag",
+              "startsAt" => 0, "length" => 4 },
+            { "text" => "bat?", "reading" => nil, "meaning" => "fake definition of bat?",
+              "startsAt" => 15, "length" => 4 }
+          ],
           "sourceLanguage" => "EN",
           "targetLanguage" => "ES"
         },
@@ -57,13 +63,35 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
     assert_equal(
       [ { "text" => "[JA]", "reading" => "ジェイエー", "meaning" => "fake target-language tag",
           "startsAt" => 0, "length" => 4 },
-        { "text" => "bat?", "reading" => nil, "meaning" => "fake gloss of the last word",
+        { "text" => "bat?", "reading" => nil, "meaning" => "fake definition of bat?",
           "startsAt" => 15, "length" => 4 } ],
       translation["glosses"]
     )
     translation["glosses"].each do |gloss|
       assert_equal gloss["text"], translation["text"][gloss["startsAt"], gloss["length"]]
     end
+    assert_equal false, translation["glossesTruncated"], "the fake never overruns the cap"
+  end
+
+  test "an explicit null glossLevel behaves exactly like an omitted one" do
+    levels = []
+    recording = Class.new do
+      include Translation::Translator
+      define_method(:translate) do |request|
+        levels << request.gloss_level
+        Translation::FakeTranslator.new.translate(request)
+      end
+    end
+    Translation.translator = recording.new
+
+    body = graphql(MUTATION, variables: { input: INPUT.merge(glossLevel: nil) })
+
+    # `glossLevel: null` is legal under the committed schema — nullable, with a default — so it
+    # has to mean the default, not a top-level INTERNAL error.
+    assert_nil body["errors"]
+    assert_equal [ Translation::GlossLevel::NOTABLE ], levels
+    assert_equal "[ES] Is this a bat?", body.dig("data", "translate", "translation", "text")
+    assert_empty body.dig("data", "translate", "errors")
   end
 
   test "glossLevel defaults to NOTABLE and accepts every level" do

@@ -40,6 +40,23 @@ describe("parseFurigana", () => {
     expect(parseFurigana("㐁《てん》")).toEqual([{ text: "㐁", reading: "てん" }]);
   });
 
+  it("keeps a compatibility ideograph inside the base", () => {
+    // 﨑 is U+FA11, in the compatibility block rather than the unified one, and ordinary in a
+    // name: left out of the kanji class the run stops short and みやざき lands over 﨑 alone.
+    expect(parseFurigana("宮﨑《みやざき》")).toEqual([{ text: "宮﨑", reading: "みやざき" }]);
+  });
+
+  it("keeps an astral extension character inside the base", () => {
+    // 𠮟 is U+20B9F (Extension B): one character, two UTF-16 units. Left out of the class the
+    // run starts at 責 and しっせき would be written over 責 by itself.
+    expect(parseFurigana("𠮟責《しっせき》")).toEqual([{ text: "𠮟責", reading: "しっせき" }]);
+  });
+
+  it("keeps 〇 and the small ヵ inside the base, like 々 and ヶ", () => {
+    expect(parseFurigana("〇〇《まるまる》")).toEqual([{ text: "〇〇", reading: "まるまる" }]);
+    expect(parseFurigana("一ヵ月《いっかげつ》")).toEqual([{ text: "一ヵ月", reading: "いっかげつ" }]);
+  });
+
   it("falls back to the single character before a group that doesn't follow kanji", () => {
     // The fake translator used in development and backend tests (design D2.4) annotates its tag.
     expect(parseFurigana("[JA]《ジェイエー》 Hello")).toEqual([

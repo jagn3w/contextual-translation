@@ -73,9 +73,9 @@ describe("annotateTranslation", () => {
     ]);
   });
 
-  it("splits a ruby segment a gloss starts inside, leaving the reading on the kanji before it", () => {
-    // 天|気です: the reading てんき was measured against 天気, so it stays on the piece that kept
-    // the kanji rather than being halved or invented for the piece that lost it.
+  it("drops the reading when a gloss starts inside a ruby base, leaving both pieces plain", () => {
+    // 天|気です: てんき was measured against 天気 as a whole. Both halves kept kanji, so neither
+    // can honestly wear it — 天 does not read てんき — and the reading goes rather than misleading.
     const middle = gloss("気です", 6, "nonsense, but it starts mid-ruby");
     expect(annotateTranslation(SENTENCE, SENTENCE_FURIGANA, [middle])).toEqual([
       {
@@ -83,8 +83,7 @@ describe("annotateTranslation", () => {
           { text: "今日", reading: "きょう" },
           { text: "は" },
           { text: "良", reading: "よ" },
-          { text: "い" },
-          { text: "天", reading: "てんき" },
+          { text: "い天" },
         ],
       },
       { parts: [{ text: "気です" }], gloss: middle },
@@ -92,13 +91,27 @@ describe("annotateTranslation", () => {
     ]);
   });
 
-  it("splits a ruby segment a gloss ends inside", () => {
+  it("drops the reading when a gloss ends inside a ruby base", () => {
     const middle = gloss("い天", 4, "nonsense, but it ends mid-ruby");
     expect(annotateTranslation(SENTENCE, SENTENCE_FURIGANA, [middle])).toEqual([
       { parts: [{ text: "今日", reading: "きょう" }, { text: "は" }, { text: "良", reading: "よ" }] },
-      { parts: [{ text: "い" }, { text: "天", reading: "てんき" }], gloss: middle },
+      { parts: [{ text: "い天" }], gloss: middle },
       { parts: [{ text: "気ですね" }] },
     ]);
+  });
+
+  it("never gives a compound's reading to one half of a split base", () => {
+    // The real shape of the bug: 東京駅《とうきょうえき》 glossed as 東京. Handing the reading to
+    // the piece that "kept the kanji" is meaningless when both did, and would teach the reader
+    // that 東京 reads とうきょうえき.
+    const tokyo = gloss("東京", 0, "Tokyo");
+    const runs = annotateTranslation("東京駅です", "東京駅《とうきょうえき》です", [tokyo]);
+    expect(runs).toEqual([
+      { parts: [{ text: "東京" }], gloss: tokyo },
+      { parts: [{ text: "駅です" }] },
+    ]);
+    // Nothing anywhere claims a reading, rather than the wrong one being quietly moved along.
+    expect(runs.flatMap((run) => run.parts).some((part) => part.reading !== undefined)).toBe(false);
   });
 
   it("puts back-to-back glosses in back-to-back runs, with no plain run between them", () => {
@@ -148,8 +161,8 @@ describe("annotateTranslation", () => {
   });
 
   it("merges adjacent parts with no reading, so the DOM stays minimal", () => {
-    // The gloss ends inside 天気: the piece that lost the reading and the plain ですね that follows
-    // it are one text node, not two.
+    // The gloss ends inside 天気: the piece left over there and the plain ですね that follows it
+    // are one text node, not two.
     const parts = annotateTranslation(SENTENCE, SENTENCE_FURIGANA, [gloss("い天", 4)])[2]?.parts;
     expect(parts).toEqual([{ text: "気ですね" }]);
   });
