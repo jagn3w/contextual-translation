@@ -18,6 +18,23 @@ class Translation::FakeTranslatorTest < ActiveSupport::TestCase
     assert_equal result.text, result.furigana.gsub(/《[^》]*》/, ""), "furigana must strip back to the text"
   end
 
+  test "a Japanese target gets glosses whose spans really are in the text" do
+    request = Translation::Request.new(
+      source_text: "Hello", source_language: Translation::Language::EN,
+      target_language: Translation::Language::JA, context: nil
+    )
+
+    glosses = Translation::FakeTranslator.new.translate(request).glosses
+
+    assert_equal [ "[JA]", "Hello" ], glosses.map(&:text)
+    assert_equal [ "ジェイエー", nil ], glosses.map(&:reading)
+    assert glosses.all? { |gloss| gloss.meaning.present? }, "every gloss needs a meaning"
+    glosses.each do |gloss|
+      assert_equal gloss.text, "[JA] Hello"[gloss.starts_at, gloss.length], "the span must hold the word"
+    end
+    assert_operator T.must(glosses.first).starts_at + T.must(glosses.first).length, :<=, T.must(glosses.last).starts_at
+  end
+
   test "only a Japanese target gets furigana" do
     request = Translation::Request.new(
       source_text: "Hello", source_language: Translation::Language::EN,
@@ -28,5 +45,6 @@ class Translation::FakeTranslatorTest < ActiveSupport::TestCase
 
     assert_equal "[ES] Hello", result.text
     assert_nil result.furigana
+    assert_empty result.glosses
   end
 end

@@ -23,6 +23,8 @@ module Translation
     # Furigana notation: a reading in double angle brackets follows the run of kanji it reads,
     # 漢字《かんじ》 (design D2.3).
     FURIGANA_READING = /《[^》]*》/
+    # At most this many glosses reach the UI, matching the cap the prompt states (design D2.3).
+    MAX_GLOSSES = 40
 
     sig do
       params(
@@ -187,7 +189,8 @@ module Translation
       notes = fields["notes"]
       Result.new(
         text: translation, notes: notes.is_a?(String) ? notes.presence : nil,
-        furigana: furigana_from(fields["furigana"], translation, request), model: message.model.to_s
+        furigana: furigana_from(fields["furigana"], translation, request),
+        glosses: glosses_from(fields["glosses"], translation, request), model: message.model.to_s
       )
     end
 
@@ -205,6 +208,55 @@ module Translation
       @logger.warn("Claude returned furigana that doesn't match the translation " \
                    "(#{value.bytesize} bytes vs #{translation.bytesize}); dropping it")
       nil
+    end
+
+    # A gloss is only usable if the UI can find the word it describes, so locate every entry in
+    # the translation rather than trusting the offsets to be there: each "text" must occur at or
+    # after the end of the previous match, which keeps repeated words on successive occurrences
+    # and the spans in order and non-overlapping. Entries that don't fit — not a string, not in
+    # the translation any more, no meaning — are dropped one by one; a malformed list is simply
+    # no glosses. The translation still comes back either way: hover definitions are a bonus.
+    sig { params(value: T.untyped, translation: String, request: Request).returns(T::Array[Gloss]) }
+    def glosses_from(value, translation, request)
+      # The reader asked for none, so nothing Claude sent is wanted — don't even look at it.
+      return [] if request.gloss_level == GlossLevel::NONE
+      return [] unless value.is_a?(Array)
+
+      cursor = 0
+      dropped = 0
+      glosses = T.let([], T::Array[Gloss])
+      value.each do |entry|
+        break if glosses.size >= MAX_GLOSSES
+
+        gloss = gloss_from(entry, translation, cursor)
+        if gloss.nil?
+          dropped += 1
+          next
+        end
+        cursor = gloss.starts_at + gloss.length
+        glosses << gloss
+      end
+      # Never log the words themselves: they are the user's text (design D4.2).
+      @logger.debug("Dropped #{dropped} of #{value.size} glosses Claude returned") if dropped.positive?
+      glosses
+    end
+
+    # nil for anything unusable. Offsets count Unicode code points, which is what String#index
+    # and String#length return, and what the UI counts too.
+    sig { params(entry: T.untyped, translation: String, cursor: Integer).returns(T.nilable(Gloss)) }
+    def gloss_from(entry, translation, cursor)
+      return nil unless entry.is_a?(Hash)
+
+      text = entry["text"]
+      meaning = entry["meaning"]
+      return nil unless text.is_a?(String) && !text.empty? && meaning.is_a?(String) && meaning.present?
+
+      starts_at = translation.index(text, cursor)
+      return nil if starts_at.nil?
+
+      reading = entry["reading"]
+      Gloss.new(text:, reading: reading.is_a?(String) ? reading.presence : nil, meaning:,
+        starts_at:, length: text.length)
     end
 
     sig { params(message: Anthropic::Models::Beta::BetaMessage, started: Float).void }

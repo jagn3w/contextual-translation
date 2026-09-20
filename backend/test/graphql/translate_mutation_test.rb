@@ -6,7 +6,10 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
   MUTATION = <<~GRAPHQL
     mutation Translate($input: TranslateInput!) {
       translate(input: $input) {
-        translation { text notes furigana sourceLanguage targetLanguage }
+        translation {
+          text notes furigana sourceLanguage targetLanguage
+          glosses { text reading meaning startsAt length }
+        }
         errors { code message retryable retryAfterSeconds }
       }
     }
@@ -35,6 +38,7 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
           "text" => "[ES] Is this a bat?",
           "notes" => "Fake translation using context: Baseball game",
           "furigana" => nil,
+          "glosses" => [],
           "sourceLanguage" => "EN",
           "targetLanguage" => "ES"
         },
@@ -44,12 +48,47 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
     )
   end
 
-  test "a Japanese target exposes furigana" do
+  test "a Japanese target exposes furigana and glosses" do
     translation = graphql(MUTATION, variables: { input: INPUT.merge(targetLanguage: "JA") })
       .dig("data", "translate", "translation")
 
     assert_equal "[JA] Is this a bat?", translation["text"]
     assert_equal "[JA]《ジェイエー》 Is this a bat?", translation["furigana"]
+    assert_equal(
+      [ { "text" => "[JA]", "reading" => "ジェイエー", "meaning" => "fake target-language tag",
+          "startsAt" => 0, "length" => 4 },
+        { "text" => "bat?", "reading" => nil, "meaning" => "fake gloss of the last word",
+          "startsAt" => 15, "length" => 4 } ],
+      translation["glosses"]
+    )
+    translation["glosses"].each do |gloss|
+      assert_equal gloss["text"], translation["text"][gloss["startsAt"], gloss["length"]]
+    end
+  end
+
+  test "glossLevel defaults to NOTABLE and accepts every level" do
+    levels = []
+    recording = Class.new do
+      include Translation::Translator
+      define_method(:translate) do |request|
+        levels << request.gloss_level
+        Translation::FakeTranslator.new.translate(request)
+      end
+    end
+    Translation.translator = recording.new
+
+    graphql(MUTATION, variables: { input: INPUT })
+    %w[NONE NOTABLE EVERY].each { |level| graphql(MUTATION, variables: { input: INPUT.merge(glossLevel: level) }) }
+
+    assert_equal [ Translation::GlossLevel::NOTABLE, Translation::GlossLevel::NONE,
+                   Translation::GlossLevel::NOTABLE, Translation::GlossLevel::EVERY ], levels
+  end
+
+  test "rejects an unknown gloss level at the schema level" do
+    body = graphql(MUTATION, variables: { input: INPUT.merge(glossLevel: "SOME") })
+
+    assert body["errors"].present?
+    assert_nil body["data"]
   end
 
   test "anticipated failures come back as typed errors" do

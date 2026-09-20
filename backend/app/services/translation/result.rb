@@ -10,6 +10,9 @@ module Translation
     # The Japanese translation repeated with a reading after each run of kanji, as 漢字《かんじ》,
     # for the UI to render as ruby text. nil unless the target is Japanese and it checks out.
     const :furigana, T.nilable(String)
+    # The words of the translation worth defining, in the order they appear in it, each with the
+    # span it occupies. Empty when there is nothing to gloss — never nil.
+    const :glosses, T::Array[Gloss], default: [].freeze
     const :model, String
   end
 end

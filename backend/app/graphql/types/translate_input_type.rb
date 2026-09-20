@@ -10,5 +10,7 @@ module Types
     argument :target_language, Types::LanguageType
     argument :context, String, required: false,
       description: "The situation: where you are, who is speaking to whom, the desired formality or region."
+    argument :gloss_level, Types::GlossLevelType, required: false, default_value: Translation::GlossLevel::NOTABLE,
+      description: "How much of the translation to gloss with per-word definitions."
   end
 end

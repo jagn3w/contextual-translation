@@ -17,7 +17,8 @@ module Mutations
         source_text: input.source_text,
         source_language: input.source_language,
         target_language: input.target_language,
-        context: input.context
+        context: input.context,
+        gloss_level: input.gloss_level
       )
       result = Translation::Service.new.call(request, session: context.fetch(:current_session))
       {
@@ -25,6 +26,7 @@ module Mutations
           text: result.text,
           notes: result.notes,
           furigana: result.furigana,
+          glosses: result.glosses,
           source_language: request.source_language,
           target_language: request.target_language
         },

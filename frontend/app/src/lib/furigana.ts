@@ -12,9 +12,20 @@ export type RubySegment = { text: string; reading?: string };
  * What a reading may be written over: CJK Unified Ideographs and Extension A, plus the marks that
  * only ever appear inside a kanji word — 々 (repeat), 〆 (shime) and ヶ (as in 三ヶ月).
  */
-const KANJI_RUN = /[々〆ヶ㐀-䶿一-鿿]+$/u;
+const KANJI = /[々〆ヶ㐀-䶿一-鿿]/u;
+/** The same class as a run, anchored: a reading sits over the kanji immediately before it. */
+const KANJI_RUN = new RegExp(`${KANJI.source}+$`, "u");
 /** A reading group. The reading itself never contains a bracket, so it can't swallow the next one. */
 const READING_GROUP = /《([^《》]*)》/gu;
+
+/**
+ * Whether anything in `text` can carry a reading. Exported for `annotateTranslation`, which splits
+ * a segment when a gloss starts or ends inside it and has to decide which half keeps the reading;
+ * it belongs here so "what counts as kanji" is defined once.
+ */
+export function hasKanji(text: string): boolean {
+  return KANJI.test(text);
+}
 
 /** The last character of `text` as a user sees it, keeping an astral character's two units together. */
 function trailingCharacter(text: string): string {

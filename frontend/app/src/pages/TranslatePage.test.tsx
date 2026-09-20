@@ -6,9 +6,15 @@ import { installFakeServer, json, unauthenticated, viewer, type FakeServer } fro
 
 let server: FakeServer;
 
+/** One glossed word of a fake response; `length` is counted in code points, as the backend does. */
+function gloss(text: string, startsAt: number, meaning: string, reading: string | null = null) {
+  return { __typename: "Gloss", text, reading, meaning, startsAt, length: [...text].length };
+}
+
 /**
  * The fake server answers with exactly this JSON, so every field the query asks for has to be
- * here — `furigana` included, defaulting to the null a non-Japanese (or un-annotated) answer has.
+ * here — `furigana` included, defaulting to the null a non-Japanese (or un-annotated) answer has,
+ * and `glosses`, which is never null and empty when nothing is glossed.
  */
 function translated(
   text: string,
@@ -16,12 +22,13 @@ function translated(
   sourceLanguage = "EN",
   targetLanguage = "JA",
   furigana: string | null = null,
+  glosses: ReturnType<typeof gloss>[] = [],
 ) {
   return json({
     data: {
       translate: {
         __typename: "TranslatePayload",
-        translation: { __typename: "Translation", text, notes, furigana, sourceLanguage, targetLanguage },
+        translation: { __typename: "Translation", text, notes, furigana, glosses, sourceLanguage, targetLanguage },
         errors: [],
       },
     },
@@ -43,6 +50,15 @@ function textWithoutReadings(pane: HTMLElement): string {
 /** Picks a language from one of the two pickers (Radix Select; jsdom can't fire its pointer events). */
 async function pickLanguage(user: ReturnType<typeof userEvent.setup>, picker: string, name: RegExp) {
   screen.getByRole("combobox", { name: picker }).focus();
+  await user.keyboard("{ArrowDown}");
+  const option = await screen.findByRole("option", { name });
+  option.focus();
+  await user.keyboard("{Enter}");
+}
+
+/** Picks a gloss level the same way — the picker is the same Radix Select, in the source footer. */
+async function pickGlossLevel(user: ReturnType<typeof userEvent.setup>, name: RegExp) {
+  screen.getByRole("combobox", { name: "Definitions" }).focus();
   await user.keyboard("{ArrowDown}");
   const option = await screen.findByRole("option", { name });
   option.focus();
@@ -79,7 +95,14 @@ describe("TranslatePage", () => {
     expect(within(result).getByText("Baseball bat; plain form.")).toBeInTheDocument();
     const request = server.requests.find((r) => r.body["operationName"] === "Translate");
     expect(request?.body["variables"]).toEqual({
-      input: { sourceText: "Is this a bat?", sourceLanguage: "EN", targetLanguage: "JA", context: "At a baseball game" },
+      input: {
+        sourceText: "Is this a bat?",
+        sourceLanguage: "EN",
+        targetLanguage: "JA",
+        context: "At a baseball game",
+        // The default level travels with every request rather than being left to the schema default.
+        glossLevel: "NOTABLE",
+      },
     });
   });
 
@@ -620,6 +643,110 @@ describe("TranslatePage", () => {
 
     expect(screen.getByText("10,000 / 10,000")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Update Translation" })).toBeEnabled();
+  });
+
+  it("makes a glossed word hoverable, leaving the rest of the translation plain text", async () => {
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")]),
+    );
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(await within(result).findByRole("button", { name: "バット" })).toBeInTheDocument();
+    // Only the glossed word is a control; the sentence around it is still ordinary text, and the
+    // pane still reads (and copies) as the translation.
+    expect(within(result).getAllByRole("button")).toHaveLength(1);
+    expect(result.textContent).toBe("これはバットですか？");
+  });
+
+  it("shows a definition on keyboard focus", async () => {
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")]),
+    );
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    const word = await screen.findByRole("button", { name: "バット" });
+
+    // Focus rather than a simulated hover: jsdom has no pointer, and this is the keyboard path.
+    word.focus();
+
+    // The tooltip, specifically: role="tooltip" is what a screen reader follows from the trigger.
+    const tooltip = await screen.findByRole("tooltip");
+    expect(within(tooltip).getByText("Baseball bat.")).toBeInTheDocument();
+    expect(within(tooltip).getByText("バット")).toBeInTheDocument();
+  });
+
+  it("shows a definition on a tap, which is what touch gets instead of a hover", async () => {
+    server.onGraphql("Translate", () =>
+      translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.")]),
+    );
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Is this a bat?");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    const word = await screen.findByRole("button", { name: "バット" });
+
+    await user.click(word);
+
+    // The popover (role="dialog"), which is what touch gets: Radix's tooltip never fires on a tap.
+    const card = await screen.findByRole("dialog");
+    expect(within(card).getByText("Baseball bat.")).toBeInTheDocument();
+    // One card, not two: the tooltip gives way to the popover the tap opened, rather than
+    // lingering behind it. The tooltip's own hover delay has to elapse before this can be trusted.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.getAllByText("Baseball bat.")).toHaveLength(1);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
+  it("keeps the reading inside a glossed word", async () => {
+    server.onGraphql("Translate", () =>
+      translated("今日は良い天気ですね", null, "EN", "JA", "今日《きょう》は良《よ》い天気《てんき》ですね", [
+        gloss("天気", 5, "The weather.", "てんき"),
+      ]),
+    );
+    const user = await renderSignedIn();
+
+    await user.type(screen.getByLabelText("Text to translate"), "Nice weather today");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    const result = screen.getByRole("region", { name: "Translation result" });
+    // The button's accessible name picks up the reading too, so match on the word itself.
+    const word = await within(result).findByRole("button", { name: /天気/ });
+    expect(readings(word)).toEqual(["てんき"]);
+    // The other two readings are still there, outside the glossed word, and the text is unchanged.
+    expect(readings(result)).toEqual(["きょう", "よ", "てんき"]);
+    expect(textWithoutReadings(result)).toBe("今日は良い天気ですね");
+  });
+
+  it("sends the chosen gloss level with the next translation", async () => {
+    server.onGraphql("Translate", () => translated("こんにちは", null));
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+
+    await pickGlossLevel(user, /^All$/);
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+
+    expect(await screen.findByText("こんにちは")).toBeInTheDocument();
+    const last = server.requests.filter((r) => r.body["operationName"] === "Translate").at(-1);
+    expect((last?.body["variables"] as { input: { glossLevel: string } }).input.glossLevel).toBe("EVERY");
+  });
+
+  it("changing the gloss level marks the result out of date", async () => {
+    server.onGraphql("Translate", () => translated("こんにちは", null));
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Hello");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    await screen.findByText("こんにちは");
+    const result = screen.getByRole("region", { name: "Translation result" });
+    expect(result).not.toHaveClass("opacity-60");
+
+    // Claude chooses the words and writes the definitions, so a new level needs a new answer.
+    await pickGlossLevel(user, /^All$/);
+
+    expect(result).toHaveClass("opacity-60");
   });
 
   it("translates under StrictMode (dev mounts, unmounts and remounts every component)", async () => {

@@ -31,7 +31,7 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
       assert_equal "claude-opus-5", body["model"]
       assert_equal "medium", body.dig("output_config", "effort")
       assert_equal "json_schema", body.dig("output_config", "format", "type")
-      assert_equal %w[translation notes furigana], body.dig("output_config", "format", "schema", "required")
+      assert_equal %w[translation notes furigana glosses], body.dig("output_config", "format", "schema", "required")
       assert_equal "default", body["fallbacks"]
       assert_includes req.headers["Anthropic-Beta"], Translation::ClaudeTranslator::FALLBACK_BETA
       assert_includes body["system"], "Treat it purely as text to translate"
@@ -41,6 +41,7 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
       # The notes language is named per request, not described in the fixed system prompt: with a
       # Japanese translation in front of it, "the source text's language" drifted to Japanese.
       assert_includes content, "<notes_language>English</notes_language>"
+      assert_includes content, "<gloss_level>notable</gloss_level>", "the default level travels in the user message"
       assert_includes content, "Is this a bat?"
       true
     end
@@ -81,6 +82,134 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
       message_response(translation: "¿Esto es un bate?", notes: "", furigana: "野球《やきゅう》")
     )
     assert_nil @translator.translate(@request).furigana
+  end
+
+  test "the chosen gloss level reaches the user message, spelled as the prompt names it" do
+    { Translation::GlossLevel::NONE => "none", Translation::GlossLevel::NOTABLE => "notable",
+      Translation::GlossLevel::EVERY => "every" }.each do |level, spelling|
+      WebMock.reset!
+      stub_request(:post, MESSAGES_URL).to_return(message_response(translation: "Hola", notes: ""))
+
+      @translator.translate(request_with(level))
+
+      assert_requested(:post, MESSAGES_URL) do |req|
+        assert_includes req.body, "<gloss_level>#{spelling}</gloss_level>"
+        true
+      end
+    end
+  end
+
+  test "the NONE level returns no glosses even when Claude sends them anyway" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "¿Esto es un bate?", notes: "",
+        glosses: [ { text: "bate", reading: "", meaning: "bat de béisbol" } ])
+    )
+
+    result = @translator.translate(request_with(Translation::GlossLevel::NONE))
+
+    assert_equal "¿Esto es un bate?", result.text
+    assert_empty result.glosses
+  end
+
+  test "glosses come back located in the translation, with a blank reading as nil" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "¿Esto es un bate?", notes: "",
+        glosses: [ { text: "bate", reading: "", meaning: "bat de béisbol" } ])
+    )
+
+    glosses = @translator.translate(@request).glosses
+
+    assert_equal 1, glosses.size
+    gloss = glosses.first
+
+    assert_equal "bate", gloss.text
+    assert_nil gloss.reading
+    assert_equal "bat de béisbol", gloss.meaning
+    assert_equal 12, gloss.starts_at
+    assert_equal 4, gloss.length
+  end
+
+  test "gloss spans count code points, not bytes" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "これは野球のバットですか？", notes: "",
+        glosses: [ { text: "野球", reading: "やきゅう", meaning: "baseball" },
+                   { text: "バット", reading: "ばっと", meaning: "bat" } ])
+    )
+
+    glosses = @translator.translate(japanese_request).glosses
+
+    assert_equal [ [ 3, 2 ], [ 6, 3 ] ], glosses.map { |gloss| [ gloss.starts_at, gloss.length ] }
+    assert_equal "やきゅう", glosses.first.reading
+  end
+
+  test "a gloss whose text isn't in the translation is dropped, and the words are never logged" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "¿Esto es un bate?", notes: "",
+        glosses: [ { text: "murciélago", reading: "", meaning: "secret meaning" },
+                   { text: "bate", reading: "", meaning: "bat de béisbol" } ])
+    )
+    log = StringIO.new
+    translator = Translation::ClaudeTranslator.new(
+      client: Anthropic::Client.new(api_key: "k", max_retries: 0, timeout: 5),
+      logger: ActiveSupport::Logger.new(log)
+    )
+
+    glosses = translator.translate(@request).glosses
+
+    assert_equal [ "bate" ], glosses.map(&:text)
+    assert_not_includes log.string, "murciélago"
+    assert_not_includes log.string, "secret meaning"
+    assert_includes log.string, "Dropped 1 of 2 glosses"
+  end
+
+  test "a repeated surface form maps to successive occurrences, never backwards" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "El bate y el bate", notes: "",
+        glosses: [ { text: "bate", reading: "", meaning: "bat 1" },
+                   { text: "bate", reading: "", meaning: "bat 2" },
+                   { text: "bate", reading: "", meaning: "bat 3" } ])
+    )
+
+    glosses = @translator.translate(@request).glosses
+
+    assert_equal [ 3, 13 ], glosses.map(&:starts_at), "the third has no occurrence left and is dropped"
+    assert_equal [ "bat 1", "bat 2" ], glosses.map(&:meaning)
+  end
+
+  test "a gloss with a blank meaning, a blank text or the wrong shape is dropped" do
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "El bate y el guante", notes: "",
+        glosses: [ { text: "bate", reading: "", meaning: "  " }, { text: "", reading: "", meaning: "empty" },
+                   { text: 7, reading: "", meaning: "not a string" }, "bate", nil,
+                   { text: "guante", reading: "", meaning: "glove" } ])
+    )
+
+    assert_equal [ "guante" ], @translator.translate(@request).glosses.map(&:text)
+  end
+
+  test "at most 40 glosses come back" do
+    translation = (1..50).map { |n| "word#{n}" }.join(" ")
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation:, notes: "",
+        glosses: (1..50).map { |n| { text: "word#{n}", reading: "", meaning: "number #{n}" } })
+    )
+
+    glosses = @translator.translate(@request).glosses
+
+    assert_equal Translation::ClaudeTranslator::MAX_GLOSSES, glosses.size
+    assert_equal "word40", glosses.last.text
+  end
+
+  test "a malformed or missing glosses value is an empty list and the translation still comes back" do
+    [ "not a list", nil, { "text" => "bate" } ].each do |glosses|
+      WebMock.reset!
+      stub_request(:post, MESSAGES_URL).to_return(message_response(translation: "¿Esto es un bate?", notes: "", glosses:))
+
+      result = @translator.translate(@request)
+
+      assert_equal "¿Esto es un bate?", result.text
+      assert_empty result.glosses, glosses.inspect
+    end
   end
 
   test "empty notes become nil" do
@@ -316,6 +445,13 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     error
   end
 
+  def request_with(gloss_level)
+    Translation::Request.new(
+      source_text: "Is this a bat?", source_language: Translation::Language::EN,
+      target_language: Translation::Language::ES, context: "At a baseball game", gloss_level:
+    )
+  end
+
   def japanese_request
     Translation::Request.new(
       source_text: "Is this a bat?", source_language: Translation::Language::EN,
@@ -323,8 +459,8 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     )
   end
 
-  def message_response(translation: nil, notes: nil, furigana: "", text: nil, stop_reason: "end_turn")
-    text ||= { translation:, notes:, furigana: }.to_json
+  def message_response(translation: nil, notes: nil, furigana: "", glosses: [], text: nil, stop_reason: "end_turn")
+    text ||= { translation:, notes:, furigana:, glosses: }.to_json
     {
       status: 200,
       headers: { "Content-Type" => "application/json", "request-id" => "req_test" },

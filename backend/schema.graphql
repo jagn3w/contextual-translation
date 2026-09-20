@@ -1,4 +1,54 @@
 """
+A word of the translation with a short definition, for the UI to show on hover (design D2.3).
+"""
+type Gloss {
+  """
+  The word's length in Unicode code points.
+  """
+  length: Int!
+
+  """
+  A short definition, written in the source text's language — the language the notes use.
+  """
+  meaning: String!
+
+  """
+  For Japanese, the word's kana reading. Null when there is none.
+  """
+  reading: String
+
+  """
+  Where the word starts in `Translation.text`, counted in Unicode code points.
+  """
+  startsAt: Int!
+
+  """
+  The word exactly as it appears in the translation.
+  """
+  text: String!
+}
+
+"""
+How much of a translation to gloss with per-word definitions (design D2.3).
+"""
+enum GlossLevel {
+  """
+  Every content word and set phrase, skipping function words.
+  """
+  EVERY
+
+  """
+  No glosses at all.
+  """
+  NONE
+
+  """
+  Only the words worth remarking on: ambiguous, idiomatic or register-carrying ones.
+  """
+  NOTABLE
+}
+
+"""
 An ISO 8601-encoded datetime
 """
 scalar ISO8601DateTime @specifiedBy(url: "https://tools.ietf.org/html/rfc3339")
@@ -131,6 +181,11 @@ input TranslateInput {
   The situation: where you are, who is speaking to whom, the desired formality or region.
   """
   context: String
+
+  """
+  How much of the translation to gloss with per-word definitions.
+  """
+  glossLevel: GlossLevel = NOTABLE
   sourceLanguage: Language!
   sourceText: String!
   targetLanguage: Language!
@@ -152,6 +207,12 @@ type Translation {
   when there is none.
   """
   furigana: String
+
+  """
+  Words of `text` worth defining, in the order they appear in it, with
+  non-overlapping spans. Empty when there is nothing to gloss.
+  """
+  glosses: [Gloss!]!
 
   """
   Claude's note on the meaning, formality and regional variety it chose.

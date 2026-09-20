@@ -4,6 +4,13 @@ mutation Translate($input: TranslateInput!) {
       text
       notes
       furigana
+      glosses {
+        text
+        reading
+        meaning
+        startsAt
+        length
+      }
       sourceLanguage
       targetLanguage
     }

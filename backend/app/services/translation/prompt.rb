@@ -13,8 +13,8 @@ module Translation
       intent of the original, natural in the target language, and right for the setting.
 
       The user message contains the text to translate in <source_text>, the source and target
-      languages, the language to write your notes in as <notes_language>, and optionally a
-      description of the situation in <context>.
+      languages, the language to write your notes in as <notes_language>, how much to gloss in
+      <gloss_level>, and optionally a description of the situation in <context>.
 
       How to use the context:
       - Use it to resolve ambiguity. A word or phrase with several possible meanings ("bat",
@@ -50,6 +50,23 @@ module Translation
       double angle brackets straight after it: 漢字《かんじ》を書《か》く. Removing every 《…》
       group must give back the translation character for character — change nothing else. Use an
       empty string when the target language is not Japanese, or when the translation has no kanji.
+
+      In "glosses", list words of the translation with a short definition each, so the reader can
+      look one up without leaving the page. How many to list is up to the reader, and
+      <gloss_level> in the user message says which of three they chose:
+      - "none" — gloss nothing. Return an empty list.
+      - "notable" — only the words worth remarking on: the ones that were genuinely ambiguous,
+        idiomatic, register-carrying or otherwise a translation decision. Usually a handful.
+      - "every" — every content word and set phrase: nouns, verbs, adjectives, adverbs, idioms.
+        Skip function words: particles, articles, pronouns, auxiliaries.
+      Each entry has "text", the word exactly as it is written in the translation, character for
+      character, so that it can be found in it; "reading", its kana reading when the translation
+      is Japanese and an empty string otherwise; and "meaning", a short definition of a few words,
+      not a sentence, written in <notes_language> — the language they wrote to you in, the same
+      language as the notes, never the language you translated into. List the entries in the order
+      the words appear in the translation, do not repeat a surface form within the same sentence,
+      and stop at 40 entries however many the level would otherwise call for. Use an empty list
+      when there is nothing worth glossing.
     PROMPT
 
     OUTPUT_SCHEMA = T.let(
@@ -68,9 +85,36 @@ module Translation
                          "in double angle brackets after it (漢字《かんじ》). Removing every 《…》 group " \
                          "must yield the translation character for character. Empty string when the " \
                          "target language is not Japanese or the translation has no kanji."
+          },
+          glosses: {
+            type: "array",
+            description: "The words of the translation to define, as many as <gloss_level> asks for, in " \
+                         "the order they appear in it, without repeating a surface form within a sentence, " \
+                         "at most 40. Empty array for gloss level none, or when there is nothing to gloss.",
+            items: {
+              type: "object",
+              properties: {
+                text: {
+                  type: "string",
+                  description: "The word exactly as it is written in the translation — a verbatim substring of it."
+                },
+                reading: {
+                  type: "string",
+                  description: "The word's kana reading when the translation is Japanese; empty string otherwise."
+                },
+                meaning: {
+                  type: "string",
+                  description: "A short definition, a few words rather than a sentence, written in " \
+                               "<notes_language> (the source text's language), never in the language " \
+                               "translated into."
+                }
+              },
+              required: %w[text reading meaning],
+              additionalProperties: false
+            }
           }
         },
-        required: %w[translation notes furigana],
+        required: %w[translation notes furigana glosses],
         additionalProperties: false
       }.freeze,
       T::Hash[Symbol, T.untyped]
@@ -82,6 +126,7 @@ module Translation
         <source_language>#{request.source_language.english_name}</source_language>
         <target_language>#{request.target_language.english_name}</target_language>
         <notes_language>#{request.source_language.english_name}</notes_language>
+        <gloss_level>#{request.gloss_level.serialize}</gloss_level>
         <context>#{request.context.presence || "(none given)"}</context>
         <source_text>
         #{request.source_text}
