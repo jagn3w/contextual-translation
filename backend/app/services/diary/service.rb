@@ -71,7 +71,6 @@ module Diary
       access_code.diary_entries.create!(language: language.serialize, notes_language: notes_language.serialize)
     end
 
-    # Saving a draft, and/or changing the language pair: no tutor call, and an empty body is fine.
     # Deletes the entry with its threads and comments. The entry's row is locked first: a review
     # saving its answer locks the entry and then writes its threads, so a delete that removed the
     # threads before touching the entry would take the same locks in the opposite order and could
@@ -84,6 +83,7 @@ module Diary
       end
     end
 
+    # Saving a draft, and/or changing the language pair: no tutor call, and an empty body is fine.
     # Nil leaves a field as it is. The pair is fixed once the entry has any thread — feedback or
     # a "Help me say…" question, which can come before any review — because they were written for it.
     sig do
