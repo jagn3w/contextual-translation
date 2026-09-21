@@ -70,7 +70,48 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     assert_equal "これは野球のバットですか？", result.text
     assert_nil result.furigana
     assert_not_includes log.string, "secret"
-    assert_includes log.string, "doesn't match the translation"
+    assert_includes log.string, "does not strip back to the translation"
+  end
+
+  test "an annotation that leaves a run of kanji bare is dropped, and the reader is told so" do
+    # Annotating only the unfamiliar part is ordinary furigana convention, and over the wire it is
+    # a wrong reading nothing downstream can catch: the notation records no base length, so the
+    # browser reads はいえん as the reading of the whole run in front of it — 新型肺炎 — while 記事
+    # stands bare. The translation is the only thing that shows the difference, and the browser
+    # cannot see it. So the annotation goes, and readingsOmitted carries the explanation.
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "新型肺炎の記事", notes: "", furigana: "新型肺炎《はいえん》の記事")
+    )
+    log = StringIO.new
+    translator = Translation::ClaudeTranslator.new(
+      client: Anthropic::Client.new(api_key: "k", max_retries: 0, timeout: 5), logger: ActiveSupport::Logger.new(log)
+    )
+
+    result = translator.translate(japanese_request)
+
+    assert_equal "新型肺炎の記事", result.text, "the translation is what must survive"
+    assert_nil result.furigana
+    assert result.readings_omitted, "a Japanese reply with no readings on it says so, whatever cost them"
+    assert_includes log.string, "one per run of kanji", "the log is the only place the cause is kept"
+    assert_not_includes log.string, "新型肺炎", "neither string is ever logged: both are the user's text"
+  end
+
+  test "a translation that contains 《…》 of its own keeps its text and loses only its readings" do
+    # `He recommended 《Kokoro》 to me.` translates with the brackets kept, which is what the
+    # prompt asks for — they are ordinary Japanese punctuation. They are also this notation's
+    # own, so the reply cannot be annotated: stripping the groups out of the furigana takes the
+    # title with them. It used to fail the round trip and return nil with readingsOmitted false,
+    # so the page showed no ruby and no reason. The translation still arrives whole.
+    stub_request(:post, MESSAGES_URL).to_return(
+      message_response(translation: "彼は《こころ》を勧めてくれた。", notes: "",
+        furigana: "彼《かれ》は《こころ》を勧《すす》めてくれた。")
+    )
+
+    result = @translator.translate(japanese_request)
+
+    assert_equal "彼は《こころ》を勧めてくれた。", result.text
+    assert_nil result.furigana
+    assert result.readings_omitted
   end
 
   test "a reading containing an opening bracket is not one group, because the browser says it isn't" do
@@ -89,18 +130,20 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
   test "the 《…》 pattern is written once, so the Ruby and TypeScript spellings cannot drift apart" do
     # prompt_test enforces the same discipline for MAX_GLOSSES. The needle is built from the
     # constant rather than typed out, so this test is not itself the extra copy it forbids.
-    opener = T.must(Translation::ClaudeTranslator::FURIGANA_READING.source[0])
+    # Translation::Furigana is the one home for every Ruby spelling of the notation — the group,
+    # the brackets and what a run of kanji is — so the exemption is that whole file rather than a
+    # single line: a second pattern next to the first is no drift, a second pattern in another
+    # file is how the Ruby and TypeScript ones came apart the first time.
+    opener = T.must(Translation::Furigana::READING_GROUP.source[0])
     in_a_regexp = "/#{opener}"
-    own_line = /^\s*FURIGANA_READING =.*$/
+    home = Rails.root.join("app/services/translation/furigana.rb").to_s
 
     copies = Dir[Rails.root.join("{app,lib,test}/**/*.rb").to_s].select do |path|
-      source = File.read(path)
-      source = source.sub(own_line, "") if path.end_with?("claude_translator.rb")
-      source.include?(in_a_regexp)
+      path != home && File.read(path).include?(in_a_regexp)
     end
 
     assert_empty copies.map { |path| Pathname.new(path).relative_path_from(Rails.root).to_s },
-      "use ClaudeTranslator::FURIGANA_READING instead of writing the pattern out again"
+      "use Translation::Furigana instead of writing the notation out again"
   end
 
   test "furigana without readings, and furigana for a non-Japanese target, become nil" do

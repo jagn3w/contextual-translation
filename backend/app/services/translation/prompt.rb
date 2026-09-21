@@ -82,9 +82,18 @@ module Translation
 
       In "furigana", repeat the translation exactly, adding the reading of each run of kanji in
       double angle brackets straight after it: 漢字《かんじ》を書《か》く. Removing every 《…》
-      group must give back the translation character for character — change nothing else. Use an
-      empty string when <readings> is "off", when the target language is not Japanese, or when the
-      translation has no kanji.
+      group must give back the translation character for character — change nothing else.
+      Annotate EVERY run of kanji, including the ones you would expect any reader to know, and
+      give the reading of the whole run the group follows, never of part of it: write
+      毎日東京《まいにちとうきょう》, never 毎日東京《とうきょう》. The reading is attached to the
+      kanji in front of it and nothing records how far back it reaches, so a run left bare or a
+      reading written for part of one is shown to the reader over the wrong characters. A
+      furigana that skips a run is dropped whole, and the reader loses every reading in it.
+      Use an empty string when <readings> is "off", when the target language is not Japanese, or
+      when the translation has no kanji. Use an empty string too when the translation itself
+      contains 《 or 》 — as a book title or for emphasis, which is ordinary punctuation and which
+      you should keep in the translation: those brackets are this notation's own, so a
+      translation using them cannot be annotated at all, and it is the readings that give way.
 
       In "glosses", list words of the translation with a short definition each, so the reader can
       look one up without leaving the page. How many to list is up to the reader, and
@@ -118,8 +127,10 @@ module Translation
             type: "string",
             description: "The translated text repeated verbatim, with the reading of each run of kanji " \
                          "in double angle brackets after it (漢字《かんじ》). Removing every 《…》 group " \
-                         "must yield the translation character for character. Empty string when <readings> is " \
-                         "off, when the target language is not Japanese, or when the translation has no kanji."
+                         "must yield the translation character for character. Every run of kanji gets a " \
+                         "group, and each group gives the reading of the whole run in front of it. Empty " \
+                         "string when <readings> is off, when the target language is not Japanese, when the " \
+                         "translation has no kanji, or when the translation itself contains 《 or 》."
           },
           glosses: {
             type: "array",

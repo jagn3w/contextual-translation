@@ -34,16 +34,6 @@ module Translation
     MIN_RETRY_SECONDS = 10.0
     # Time kept back for the Claude call itself when waiting for credentials.
     MIN_CALL_SECONDS = 10.0
-    # Furigana notation: a reading in double angle brackets follows the run of kanji it reads,
-    # 漢字《かんじ》 (design D2.3). The reading itself may not contain either bracket, which is
-    # what the browser's READING_GROUP says too (frontend/app/src/lib/furigana.ts) — and the two
-    # have to agree character for character, because each strips the groups out and compares what
-    # is left against the translation. A Ruby pattern that allowed 《 inside a reading accepted
-    # 漢字《かん《じ》 as a clean round trip and shipped it; the browser saw only 《じ》, failed its
-    # own check and dropped every reading in the reply. This constant is the one spelling: never
-    # write the pattern out again, here or in a test (see claude_translator_test.rb).
-    FURIGANA_READING = /《[^《》]*》/
-
     sig do
       params(
         client: Anthropic::Client,
@@ -205,33 +195,43 @@ module Translation
 
       fields = T.cast(parsed, T::Hash[String, T.untyped])
       notes = fields["notes"]
+      furigana = fields["furigana"]
       located = glosses_from(fields["glosses"], translation, request)
-      # Result.for_request applies the cap and the furigana gate, so what it returns — not what
-      # was located above — is what the reader gets, and what the log below has to count against.
+      # Result.for_request applies every rule — the gloss level and cap, the furigana gate and the
+      # annotation rules — so what it returns, not what was parsed above, is what the reader gets
+      # and what the two logs below have to count against. Nothing here second-guesses it: the
+      # only work left on this side is narrowing the JSON values to the types it takes.
       result = Result.for_request(
         request:, text: translation, notes: notes.is_a?(String) ? notes.presence : nil,
-        furigana: furigana_from(fields["furigana"], translation),
+        furigana: furigana.is_a?(String) ? furigana : nil,
         glosses: located, model: message.model.to_s
       )
+      log_furigana_loss(furigana, translation, result)
       log_gloss_loss(fields["glosses"], located, result, request)
       result
     end
 
-    # Furigana is only useful if it is the translation with readings added, so check it rather
-    # than trust it: strip every 《…》 group and the translation must come back character for
-    # character. Anything else (an empty or reworded string, no readings at all) becomes nil and
-    # the UI shows plain text. Whether readings were wanted for this request at all — a Japanese
-    # target, a source inside Prompt::FURIGANA_LIMIT — is Result.for_request's question, asked of
-    # every translator rather than of this one.
-    sig { params(value: T.untyped, translation: String).returns(T.nilable(String)) }
-    def furigana_from(value, translation)
-      return nil unless value.is_a?(String) && value.match?(FURIGANA_READING)
-      return value if value.gsub(FURIGANA_READING, "") == translation
+    # What the reader lost when Claude annotated the translation and the annotation could not be
+    # used. The result itself cannot say it: `readings_omitted` reports that the readings are
+    # gone, not that Claude sent some and they were thrown away, and that difference is the one
+    # signal a drifting prompt or model would show up in first. warn, not debug: production runs
+    # at log_level "info" (config/environments/production.rb), so a debug line here is written
+    # nowhere anyone can read it — the same reason log_gloss_loss warns.
+    #
+    # Never log either string: both are the user's text (design D4.2). Furigana.rejection's phrase
+    # names a rule and nothing else, and the lengths are bytes.
+    #
+    # A request that never asked for readings reaches here too, and an unusable string is worth
+    # the same line whether or not the gate would have dropped it anyway — the alternative is
+    # asking Result's question a second time on this side, which is the whole defect this branch
+    # keeps paying for (design D2.4).
+    sig { params(value: T.untyped, translation: String, result: Result).void }
+    def log_furigana_loss(value, translation, result)
+      return if result.furigana.present? || !value.is_a?(String)
+      return if (reason = Furigana.rejection(value, translation)).nil?
 
-      # Never log either string: both are the user's text (design D4.2).
-      @logger.warn("Claude returned furigana that doesn't match the translation " \
+      @logger.warn("Claude returned furigana this translation cannot use — #{reason} " \
                    "(#{value.bytesize} bytes vs #{translation.bytesize}); dropping it")
-      nil
     end
 
     # A gloss is only usable if the UI can find the word it describes, so locate every entry in
@@ -245,12 +245,10 @@ module Translation
     # cut, so this only has to say which entries are usable at all.
     sig { params(value: T.untyped, translation: String, request: Request).returns(T::Array[Gloss]) }
     def glosses_from(value, translation, request)
-      # The reader asked for none, so nothing Claude sent is wanted — don't even look at it.
-      return [] if request.gloss_level == GlossLevel::NONE
       return [] unless value.is_a?(Array)
 
       locator = GlossLocator.new(translation:, language: request.target_language)
-      value.filter_map { |entry| gloss_from(entry, locator, request) }
+      value.filter_map { |entry| gloss_from(entry, locator) }
     end
 
     # What the reader lost, counted against what Claude offered: entries that couldn't be placed
@@ -259,6 +257,8 @@ module Translation
     # (design D4.2).
     sig { params(value: T.untyped, located: T::Array[Gloss], result: Result, request: Request).void }
     def log_gloss_loss(value, located, result, request)
+      # At the NONE level the empty list is what the reader asked for, not a loss: Result drops
+      # whatever Claude sent for exactly that reason, and there is nothing to report.
       return if request.gloss_level == GlossLevel::NONE
       return unless value.is_a?(Array)
       return unless (lost = value.size - result.glosses.size).positive?
@@ -267,15 +267,18 @@ module Translation
       # warn, not debug: production runs at log_level "info" (config/environments/production.rb),
       # so a debug line here was written nowhere anyone could read it and the loss left no trace
       # at all. It cannot be inferred from the result either — `glosses_truncated` is the cap's
-      # flag and stays false, correctly, for an entry the locator could not place. furigana_from
+      # flag and stays false, correctly, for an entry the locator could not place. log_furigana_loss
       # warns about its equivalent drop for exactly this reason; this is the same loss.
       @logger.warn("Dropped #{lost} of #{value.size} glosses Claude returned " \
                    "(#{over_cap} of them over the #{Prompt::MAX_GLOSSES} cap)")
     end
 
-    # nil for anything unusable, the locator's cursor untouched by the ones it rejects.
-    sig { params(entry: T.untyped, locator: GlossLocator, request: Request).returns(T.nilable(Gloss)) }
-    def gloss_from(entry, locator, request)
+    # nil for anything unusable, the locator's cursor untouched by the ones it rejects. The
+    # reading travels as Claude wrote it, for every target: whether kana readings belong on this
+    # request at all is Result.for_request's question, asked once of every translator rather than
+    # again here (design D2.4).
+    sig { params(entry: T.untyped, locator: GlossLocator).returns(T.nilable(Gloss)) }
+    def gloss_from(entry, locator)
       return nil unless entry.is_a?(Hash)
 
       text = entry["text"]
@@ -285,9 +288,7 @@ module Translation
       starts_at = locator.locate(text)
       return nil if starts_at.nil?
 
-      # Kana readings are the Japanese feature; for any other target whatever Claude put in
-      # "reading" is not one, so it doesn't travel (see Gloss#reading).
-      reading = request.target_language == Language::JA ? entry["reading"] : nil
+      reading = entry["reading"]
       Gloss.new(text:, reading: reading.is_a?(String) ? reading.presence : nil, meaning:,
         starts_at:, length: text.length)
     end

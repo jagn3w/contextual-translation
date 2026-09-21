@@ -251,13 +251,14 @@ describe("TranslatePage", () => {
     expect(await within(result).findByText(/2 words are defined and the rest of the translation is not/)).toBeInTheDocument();
   });
 
-  it("says the readings were dropped for length, not that the text had none to give", async () => {
-    // The length switch is furigana-only: a long source still gets its definitions, so the pane
-    // goes on implying an annotated answer while the readings quietly aren't there. `furigana` is
-    // null either way — the flag is the only thing that separates "too long to ask" from "this
-    // Japanese has no kanji", and only the first is the reader's to know about.
+  it("says this answer has no readings, without naming a cause it can't know", async () => {
+    // Whatever dropped the furigana — the length gate never asking, or what came back being
+    // rejected — the definitions arrive regardless, so the pane goes on implying an annotated
+    // answer while the readings quietly aren't there. `furigana` is null either way, and the flag
+    // is the only thing that separates "you didn't get these" from "this Japanese has no kanji".
+    // The flag does not say which cause it was, so neither may the sentence.
     // The gloss carries a reading, which is the case the notice may not talk over: `gloss_from`
-    // keeps `reading` for any Japanese target whatever the length gate did, so this pane both
+    // keeps `reading` for any Japanese target whatever dropped the furigana, so this pane both
     // prints "no readings" and hands one over on hover.
     server.onGraphql("Translate", () =>
       translated("これはバットですか？", null, "EN", "JA", null, [gloss("バット", 3, "Baseball bat.", "ばっと")], false, true),
@@ -273,10 +274,13 @@ describe("TranslatePage", () => {
     // disproved it by hovering the first defined word.
     expect(
       await within(result).findByText(
-        "The text was too long to ask for kana readings over the translation, so it has none.",
+        "No kana readings came with this answer, so there are none over the translation. It isn't that the Japanese has no kanji to read.",
       ),
     ).toBeInTheDocument();
     expect(within(result).queryByText(/this translation has none/)).not.toBeInTheDocument();
+    // And no cause: the flag is raised both when the readings were never asked for and when what
+    // came back was rejected, and the pane is told which by neither the schema nor the payload.
+    expect(within(result).queryByText(/too long/)).not.toBeInTheDocument();
     expect(result.querySelectorAll("ruby")).toHaveLength(0);
     // The definitions survived the length switch, and say nothing about having been cut short.
     const word = within(result).getByRole("button", { name: "バット" });
@@ -308,9 +312,10 @@ describe("TranslatePage", () => {
   });
 
   it("runs both shortfalls into one notice rather than stacking two", async () => {
-    // A long Japanese source with more than the cap's worth of glossable words reaches exactly
-    // this state. The causes differ — length for the readings, a per-answer cap for the
-    // definitions — so the sentences stay distinct, but they are one block under the translation.
+    // A Japanese answer with no readings and more than the cap's worth of glossable words reaches
+    // exactly this state. The two are unrelated — a per-answer cap on entries is what ran out for
+    // the definitions — so the sentences stay distinct, but they are one block under the
+    // translation.
     server.onGraphql("Translate", () =>
       translated("これはバットですか？", null, "EN", "JA", null, [gloss("これ", 0, "This."), gloss("バット", 3, "Bat.")], true, true),
     );
@@ -324,7 +329,7 @@ describe("TranslatePage", () => {
     const result = screen.getByRole("region", { name: "Translation result" });
     expect(
       await within(result).findByText(
-        /^The text was too long to ask for kana readings over the translation, so it has none\. Definitions stop partway: 2 words are defined and the rest of the translation is not\.$/,
+        /^No kana readings came with this answer, so there are none over the translation\. It isn't that the Japanese has no kanji to read\. Definitions stop partway: 2 words are defined and the rest of the translation is not\.$/,
       ),
     ).toBeInTheDocument();
     expect(within(result).getAllByText(/kana readings|Definitions stop partway/)).toHaveLength(1);
@@ -357,6 +362,44 @@ describe("TranslatePage", () => {
     expect(result.querySelectorAll("ruby")).toHaveLength(0);
   });
 
+  it("gives the readings, glosses and note back when a swap → translate → swap leaves the text alone", async () => {
+    // The round trip the reader actually performs: read the Japanese, swap to check it back into
+    // English, then swap home. Nothing edits the Japanese anywhere in it — the second translation
+    // is *out of* that text, not over it — so everything Claude said about it is still true of it.
+    server.onGraphql("Translate", (body) => {
+      const { input } = body["variables"] as { input: { targetLanguage: string } };
+      return input.targetLanguage === "JA"
+        ? translated("日本語", "The language, not the country.", "EN", "JA", "日本語《にほんご》", [
+            gloss("日本語", 0, "The Japanese language.", "にほんご"),
+          ])
+        : translated("The Japanese language", null, "JA", "EN");
+    });
+    const user = await renderSignedIn();
+    await user.type(screen.getByLabelText("Text to translate"), "Japanese");
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    const result = screen.getByRole("region", { name: "Translation result" });
+    await waitFor(() => expect(result.querySelectorAll("ruby")).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Swap languages" }));
+    await user.click(screen.getByRole("button", { name: "Update Translation" }));
+    expect(await within(result).findByText("The Japanese language")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Swap languages" }));
+
+    // The Japanese pane is showing the identical 日本語 it showed three clicks ago. The answer that
+    // wrote it — and the readings over it, the definition under it and the note beside it — was
+    // evicted by the answer made *out of* it, which changed none of those characters. The pane then
+    // painted itself up to date over strictly less than it had, so nothing on screen gave the
+    // reader a reason to re-translate against a 20/min, 300/day cap for text that had not moved.
+    expect(within(result).getByText("日本語", { selector: "ruby" })).toBeInTheDocument();
+    expect(readings(result)).toEqual(["にほんご"]);
+    expect(within(result).getByRole("button", { name: "日本語" })).toBeInTheDocument();
+    expect(within(result).getByText("The language, not the country.")).toBeInTheDocument();
+    // And it really is current: the pair on screen is the second answer's, reversed.
+    expectUpToDate(result);
+    expect(server.requests.filter((request) => request.body["operationName"] === "Translate")).toHaveLength(2);
+  });
+
   it("does not put the access code on screen", async () => {
     await renderSignedIn();
 
@@ -374,6 +417,23 @@ describe("TranslatePage", () => {
     // jsdom answers scrollHeight 0, so the auto-grow hook must hand the height back to the
     // frame's min-height instead of collapsing it to 0px.
     expect(source.style.height).toBe("");
+  });
+
+  it("caps how far the source pane may grow, in the CSS the hook reads its ceiling from", async () => {
+    const user = await renderSignedIn();
+    const source = screen.getByLabelText("Text to translate");
+
+    await user.click(source);
+    await user.paste("a".repeat(10_001));
+
+    // Uncapped, the pane grows with the paste and takes the column with it: the gloss picker, the
+    // counter and Update Translation go below the fold — worst here, where the button is disabled
+    // and this is the only sentence saying why. jsdom lays nothing out, so what can be asserted in
+    // this suite is that the ceiling is on the element at all; useAutoGrowTextarea's own suite
+    // proves what the hook does with one, and that it hands the clamped box a scrollbar.
+    expect(source.className).toMatch(/\bmax-h-\[/);
+    expect(source).toHaveClass("overflow-hidden");
+    expect(screen.getByText(/Too long to translate/)).toBeInTheDocument();
   });
 
   it("disables the button until there is text", async () => {

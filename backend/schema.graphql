@@ -203,8 +203,10 @@ type TranslatePayload {
 type Translation {
   """
   For Japanese, `text` repeated with a reading in double angle brackets after
-  each run of kanji (漢字《かんじ》); removing every 《…》 group gives back `text`. Null
-  when there is none.
+  each run of kanji (漢字《かんじ》); removing every 《…》 group gives back `text`. Every
+  run of kanji in `text` carries exactly one group and no group sits anywhere
+  else, so the run a reading follows is the run it was written for. Null when
+  there is none, which `readingsOmitted` explains for a Japanese target.
   """
   furigana: String
 
@@ -228,9 +230,11 @@ type Translation {
   notes: String
 
   """
-  True when the source was too long for kana readings to be asked for at all, so
-  `furigana` is null because the request gave the readings up rather than
-  because `text` has no kanji. False for every target but Japanese, where
+  True whenever the target is Japanese and `furigana` is null, whatever the
+  reason: the source was too long for readings to be asked for, `text` has no
+  kanji to annotate, or the readings that came back did not annotate `text` and
+  were dropped. So `text` is Japanese and carries no readings, which is worth
+  saying to a reader expecting them. False for every target but Japanese, where
   readings are not expected in the first place.
   """
   readingsOmitted: Boolean!

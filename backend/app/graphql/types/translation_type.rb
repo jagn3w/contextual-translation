@@ -9,7 +9,10 @@ module Types
     field :notes, String, description: "Claude's note on the meaning, formality and regional variety it chose."
     field :furigana, String,
       description: "For Japanese, `text` repeated with a reading in double angle brackets after each run of " \
-                   "kanji (漢字《かんじ》); removing every 《…》 group gives back `text`. Null when there is none."
+                   "kanji (漢字《かんじ》); removing every 《…》 group gives back `text`. Every run of kanji in " \
+                   "`text` carries exactly one group and no group sits anywhere else, so the run a reading " \
+                   "follows is the run it was written for. Null when there is none, which `readingsOmitted` " \
+                   "explains for a Japanese target."
     field :glosses, [ Types::GlossType ], null: false,
       description: "Words of `text` worth defining, in the order they appear in it, with " \
                    "non-overlapping spans. Empty when there is nothing to gloss."
@@ -23,10 +26,18 @@ module Types
       description: "True when more glosses were offered than the cap allows and the extras were dropped, so " \
                    "`glosses` runs out before the end of `text`. False means only that the cap did not cut the " \
                    "list off: `glosses` is never a complete index of `text`, and a word without one is ordinary."
+    # One flag for every way the readings can go missing, because they are one fact from where the
+    # reader sits: this Japanese text is carrying no readings, and not because none were wanted.
+    # Splitting it by cause would ask the UI to write three sentences where the reader needs one,
+    # and the causes are not all knowable from here anyway — a translation with no kanji and one
+    # whose annotation was rejected both arrive as a null `furigana`. Which it was is logged
+    # rather than shown.
     field :readings_omitted, Boolean, null: false,
-      description: "True when the source was too long for kana readings to be asked for at all, so `furigana` " \
-                   "is null because the request gave the readings up rather than because `text` has no kanji. " \
-                   "False for every target but Japanese, where readings are not expected in the first place."
+      description: "True whenever the target is Japanese and `furigana` is null, whatever the reason: the " \
+                   "source was too long for readings to be asked for, `text` has no kanji to annotate, or the " \
+                   "readings that came back did not annotate `text` and were dropped. So `text` is Japanese " \
+                   "and carries no readings, which is worth saying to a reader expecting them. False for " \
+                   "every target but Japanese, where readings are not expected in the first place."
     field :source_language, Types::LanguageType, null: false
     field :target_language, Types::LanguageType, null: false
   end

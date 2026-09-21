@@ -5,6 +5,13 @@
  * 書《か》く — and the backend guarantees it strips back to `text` character for character once
  * every 《…》 group is removed, so this only has to decide *what each reading is attached to*,
  * never to validate the string.
+ *
+ * It guarantees one thing more, and that is what makes the decision below safe: every maximal run
+ * of kanji in the translation carries exactly one group, and no group sits anywhere else
+ * (`Translation::Furigana`, applied on the one path every translator takes in
+ * `Result.for_request`). An annotation that leaves a run bare, or hangs a reading off kana, is
+ * rejected whole over there and arrives here as no furigana at all — with `readingsOmitted` set,
+ * so the page can say the readings are missing instead of quietly showing none.
  */
 export type RubySegment = { text: string; reading?: string };
 
@@ -60,12 +67,21 @@ const READING_GROUP = /《([^《》]*)》/gu;
  * plain run off in front of it), so trimming a trailing ケ/ツ/ノ back off a run leaves nothing
  * touching the group and the reading is dropped for the same reason as any other non-kanji.
  *
- * Dropped rather than written over whatever character happens to precede it, because the backend
- * guarantees only that stripping every 《…》 group reproduces the translation
- * (`ClaudeTranslator#furigana_from`); nothing there says a group sits after kanji. A reading
- * measured against a word it isn't over is a lie in the one pane people are reading Japanese out
- * of — お願い《おねがい》します would put おねがい over い — and a missing reading is only a gap.
- * This is the rule `annotateTranslation` already applies to a base a gloss cut in two.
+ * The run this takes is the run the backend measured, not a guess at it: `Translation::Furigana`
+ * checks — against the translation, which this side never sees — that every maximal run of kanji
+ * carries exactly one group and that no group sits anywhere else, and rejects the whole string
+ * otherwise. That is why both sides run the same two character classes over the same run: a
+ * disagreement about where a run ends is a reading one side accepts and the other paints over the
+ * wrong characters. What no rule on either side can see is a reading written for only part of the
+ * run it follows — 毎日東京《とうきょう》 is one run with one group, and nothing in the notation
+ * records that とうきょう was meant for 東京 alone; the prompt is the only place that can ask for
+ * the whole run's reading, and it does.
+ *
+ * A group with no base is still dropped rather than written over whatever character happens to
+ * precede it. The guarantee above is the backend's promise, and this is the one pane people are
+ * reading Japanese out of: a reading measured against a word it isn't over is a lie —
+ * お願い《おねがい》します would put おねがい over い — where a missing reading is only a gap. This
+ * is the rule `annotateTranslation` already applies to a base a gloss cut in two.
  */
 function baseOf(pending: string): string {
   return KANJI_RUN.exec(pending)?.[0] ?? "";

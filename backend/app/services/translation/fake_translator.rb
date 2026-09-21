@@ -15,28 +15,43 @@ module Translation
     # it.
     JA_TAG_WORD = "日本語"
     JA_TAG_READING = "にほんご"
+    # What every other run of kanji is read as — the source text's own kanji, which reach the fake
+    # translation unchanged and which a fake translator has no way to read. It is visibly a
+    # stand-in rather than a plausible reading, so nobody mistakes the dev path for a translator.
+    STAND_IN_READING = "かな"
 
     sig { override.params(request: Request).returns(Result) }
     def translate(request)
       text = "#{tag(request)} #{request.source_text}"
       notes = request.context.present? ? "Fake translation using context: #{request.context}" : nil
-      # Result.for_request applies the furigana limit and the gloss cap here exactly as it does
-      # for ClaudeTranslator, so a long fake source degrades the way production does — dev and CI
-      # can see both the truncated gloss list and the omitted readings (design D2.4).
-      Result.for_request(request:, text:, notes:, furigana: furigana_for(text, request),
+      # Result.for_request applies every rule here exactly as it does for ClaudeTranslator — the
+      # gloss level and cap, the Japanese-only kana readings, the furigana limit and the
+      # annotation rules — so the fake degrades the way production does and dev and CI can see
+      # the truncated gloss list and the omitted readings for themselves (design D2.4).
+      Result.for_request(request:, text:, notes:, furigana: furigana_for(text),
         glosses: glosses_for(text, request), model: MODEL)
     end
 
     private
 
-    # One reading on the Japanese tag, so the dev and test paths exercise ruby rendering. It
-    # follows the kanji it reads, as a real reading does, and the string still strips back to
-    # `text` exactly, which is what ClaudeTranslator requires of the real thing.
-    sig { params(text: String, request: Request).returns(T.nilable(String)) }
-    def furigana_for(text, request)
-      return nil unless request.target_language == Language::JA
-
-      text.sub(JA_TAG_WORD, "#{JA_TAG_WORD}《#{JA_TAG_READING}》")
+    # `text` with a reading after every run of kanji, so the dev and test paths exercise ruby
+    # rendering — the tag reads にほんご and anything the source brought with it gets the stand-in.
+    # Every run, not just the tag's: Result.for_request rejects an annotation that leaves a run
+    # bare (Furigana), because a reader shown one reading and no other cannot tell which run it
+    # was written for. A source carrying kanji used to make the fake's furigana exactly that, and
+    # the browser dropped the whole string rather than paint it.
+    #
+    # Whether this request wanted readings at all — a Japanese target, a source inside the limit —
+    # is not asked here: Result.for_request asks it of every translator, and the fake offering
+    # readings a Spanish request will not keep is what makes that gate visible on the dev and CI
+    # path instead of merely assumed (design D2.4). Nor does this promise the result is usable:
+    # a source with 《…》 of its own cannot be annotated at all, and the fake is how dev and CI
+    # reach that degrade.
+    sig { params(text: String).returns(String) }
+    def furigana_for(text)
+      text.gsub(Furigana::KANJI_RUN) do |run|
+        "#{run}《#{run == JA_TAG_WORD ? JA_TAG_READING : STAND_IN_READING}》"
+      end
     end
 
     # The fake honours <gloss_level> so the dev and CI paths exercise the picker instead of
@@ -48,10 +63,13 @@ module Translation
       level = request.gloss_level
       words =
         case level
-        when GlossLevel::NONE then []
+        # NONE is not a case of its own: Result.for_request drops the list for it, on the one path
+        # every translator takes, and the fake offering words it will not keep is what exercises
+        # that rule in dev and CI rather than leaving it assumed (design D2.4).
+        #
         # A couple of entries, standing in for "the ones worth remarking on": the language tag
         # and the last word of the fake translation.
-        when GlossLevel::NOTABLE then [ tag(request), T.must(text.split.last) ].uniq
+        when GlossLevel::NONE, GlossLevel::NOTABLE then [ tag(request), T.must(text.split.last) ].uniq
         # Every word, which is visibly more than NOTABLE for anything but a one-word source — and
         # for a source of more than Prompt::MAX_GLOSSES words, more than the cap keeps.
         when GlossLevel::EVERY then text.split
@@ -74,10 +92,12 @@ module Translation
         next if starts_at.nil?
 
         is_tag = word == tag(request)
+        # The tag carries a kana reading whatever the target, so that a Spanish request really
+        # does arrive at Result.for_request with a reading on it and the "kana readings are the
+        # Japanese feature" rule is exercised rather than taken on trust (design D2.4).
         Gloss.new(
           text: word, meaning: is_tag ? "fake target-language tag" : "fake definition of #{word}",
-          reading: is_tag && request.target_language == Language::JA ? JA_TAG_READING : nil,
-          starts_at:, length: word.length
+          reading: is_tag ? JA_TAG_READING : nil, starts_at:, length: word.length
         )
       end
     end

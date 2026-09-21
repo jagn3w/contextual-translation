@@ -82,8 +82,11 @@ module TranslationEval
     def annotations(result)
       furigana = result.furigana
       readings =
-        if result.readings_omitted then "furigana omitted (source over the limit)"
-        elsif furigana then "furigana #{furigana.length} chars"
+        if furigana then "furigana #{furigana.length} chars"
+        # readings_omitted covers every way a Japanese reply can arrive without them — source over
+        # the limit, no kanji to annotate, or an annotation Result rejected — so the cause is in
+        # the Rails log for this run (ClaudeTranslator#log_furigana_loss), not in this line.
+        elsif result.readings_omitted then "furigana omitted"
         else "no furigana"
         end
       "#{readings}, glosses #{result.glosses.size}#{result.glosses_truncated ? ' (capped)' : ''}"

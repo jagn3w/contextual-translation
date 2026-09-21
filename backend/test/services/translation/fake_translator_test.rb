@@ -15,9 +15,9 @@ class Translation::FakeTranslatorTest < ActiveSupport::TestCase
     assert_equal "Fake translation using context: At work", result.notes
     assert_equal "fake", result.model
     assert_equal "[日本語《にほんご》] Hello", result.furigana
-    # ClaudeTranslator::FURIGANA_READING, never a retyped copy of it: a third spelling of the
+    # Translation::Furigana::READING_GROUP, never a retyped copy of it: a third spelling of the
     # 《…》 rule is how the Ruby and TypeScript ones came to disagree in the first place.
-    assert_equal result.text, result.furigana.gsub(Translation::ClaudeTranslator::FURIGANA_READING, ""),
+    assert_equal result.text, result.furigana.gsub(Translation::Furigana::READING_GROUP, ""),
       "furigana must strip back to the text"
     assert_not result.readings_omitted
   end
@@ -55,6 +55,32 @@ class Translation::FakeTranslatorTest < ActiveSupport::TestCase
     # ClaudeTranslator does by word boundary there (design D2.3).
     assert_equal [ "[ES]", "Hello" ], result.glosses.map(&:text)
     assert_equal [ nil, nil ], result.glosses.map(&:reading), "kana readings are the Japanese feature"
+  end
+
+  test "kanji the source brought with it are annotated too, so the dev path keeps its ruby" do
+    # The fake annotates every run of kanji in its output, not just its own tag: a run left bare
+    # is an annotation Result.for_request rejects, and the dev, CI and frontend paths would have
+    # shown no ruby at all for any source with kanji in it. The readings on the source's own
+    # kanji are visibly stand-ins — a fake translator cannot read them.
+    result = translate("東京", target_language: Translation::Language::JA)
+
+    assert_equal "[日本語] 東京", result.text
+    assert_equal "[日本語《にほんご》] 東京《#{Translation::FakeTranslator::STAND_IN_READING}》", result.furigana
+    assert_not result.readings_omitted
+  end
+
+  test "a source carrying 《…》 of its own degrades cleanly instead of shipping unusable readings" do
+    # U+300A/U+300B are the notation's own brackets, so a translation containing a pair cannot be
+    # annotated at all. The fake used to hand this straight to the reader: `text` was
+    # "[日本語] テスト《てすと》" and the furigana stripped back to "[日本語] テスト", so the browser
+    # failed its round trip and silently showed no ruby, and `readingsOmitted` said false —
+    # nothing on the page and nothing to explain it. Result.for_request now asks the annotation
+    # rules of the fake exactly as it does of Claude (design D2.4).
+    result = translate("テスト《てすと》", target_language: Translation::Language::JA)
+
+    assert_equal "[日本語] テスト《てすと》", result.text, "the translation is what must survive"
+    assert_nil result.furigana
+    assert result.readings_omitted, "no ruby and no explanation is the state this must never be in again"
   end
 
   test "a source over the furigana limit omits the readings, as production does" do

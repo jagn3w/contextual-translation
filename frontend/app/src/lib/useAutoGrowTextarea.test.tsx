@@ -92,12 +92,22 @@ function restoreScrollHeight() {
   delete (HTMLTextAreaElement.prototype as unknown as Record<string, unknown>)["offsetHeight"];
 }
 
-function Grower({ value }: { value: string }) {
+/**
+ * The ceiling the clamped cases hang on, in px. jsdom applies no stylesheet — a Tailwind
+ * `max-h-[65vh]` is invisible to it and viewport units resolve to nothing — so the ceiling is put
+ * on the element the one way `getComputedStyle` will read back here: an inline, absolute length.
+ */
+const CEILING = 5 * LINE;
+
+/** The element's `max-height`, as a CSS value: "" for no ceiling, which is the default case. */
+function Grower({ value, maxHeight = "" }: { value: string; maxHeight?: string }) {
   const ref = useAutoGrowTextarea(value);
-  return <textarea ref={ref} value={value} readOnly aria-label="Grower" />;
+  return <textarea ref={ref} value={value} readOnly aria-label="Grower" style={{ maxHeight }} />;
 }
 
 const box = () => screen.getByLabelText<HTMLTextAreaElement>("Grower").style.height;
+/** Whether the hook has handed the box a scrollbar; "" leaves the element's class in charge. */
+const overflow = () => screen.getByLabelText<HTMLTextAreaElement>("Grower").style.overflowY;
 
 describe("useAutoGrowTextarea", () => {
   afterEach(() => {
@@ -166,6 +176,64 @@ describe("useAutoGrowTextarea", () => {
     render(<Grower value={"one\ntwo"} />);
 
     expect(box()).toBe("");
+  });
+
+  it("stops growing at the element's own max-height, and lets the box scroll from there", () => {
+    // Unbounded, a 4,000-word paste — well inside the 10,000-character limit — grew this box to
+    // ~10,000px, the grid stretched the result pane to match, and the gloss picker, the character
+    // counter and Update Translation ended up thousands of pixels below the fold. Worst over the
+    // limit, where the button is disabled and the only sentence saying why is down there too.
+    stubScrollHeight();
+    render(<Grower value={"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight"} maxHeight={`${CEILING}px`} />);
+
+    expect(box()).toBe(`${CEILING}px`);
+    // And the text past the ceiling has to stay reachable: the element carries `overflow-hidden`
+    // (it has no scrollbar and no resize handle by design), so a box clamped under its own content
+    // would simply not paint the rest of the draft, with no way to scroll to it.
+    expect(overflow()).toBe("auto");
+  });
+
+  it("leaves the overflow to CSS while the text still fits", () => {
+    // Below the ceiling the box is exactly as tall as its text, so there is nothing to scroll and
+    // `overflow-hidden` should still be what governs — an always-on `auto` invites a browser to
+    // paint a scrollbar over a sub-pixel row of content.
+    stubScrollHeight();
+    const { rerender } = render(<Grower value={"one\ntwo"} maxHeight={`${CEILING}px`} />);
+    expect(box()).toBe(`${2 * LINE}px`);
+    expect(overflow()).toBe("");
+
+    // And it comes back off when a clamped box is cut back down to something that fits.
+    rerender(<Grower value={"one\ntwo\nthree\nfour\nfive\nsix"} maxHeight={`${CEILING}px`} />);
+    expect(box()).toBe(`${CEILING}px`);
+    rerender(<Grower value={"one\ntwo"} maxHeight={`${CEILING}px`} />);
+
+    expect(box()).toBe(`${2 * LINE}px`);
+    expect(overflow()).toBe("");
+  });
+
+  it("treats a ceiling it cannot read in pixels as no ceiling at all", () => {
+    // `getComputedStyle` hands back `none` for no ceiling and pixels for viewport units, but a
+    // percentage stays a percentage. Read with a bare `parseFloat` that would be a 50-pixel
+    // ceiling — two and a half lines, whatever the box is actually allowed — which clips the text
+    // far harder than not clamping does. Anything that isn't pixels means there is no ceiling here.
+    stubScrollHeight();
+    render(<Grower value={"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight"} maxHeight="50%" />);
+
+    expect(box()).toBe(`${8 * LINE}px`);
+    expect(overflow()).toBe("");
+  });
+
+  it("clamps the border box, borders included, so the ceiling is the height CSS enforces", () => {
+    // `max-height` caps the border box (preflight makes every box border-box) and the height the
+    // hook writes contains the borders too, so the two have to be compared as they stand. Clamping
+    // the content height instead would write a box one border pair taller than its own ceiling —
+    // CSS would cut it back, and the last measured row would be hidden rather than scrollable.
+    stubScrollHeight();
+    stubBorders();
+    render(<Grower value={"one\ntwo\nthree\nfour\nfive\nsix"} maxHeight={`${CEILING}px`} />);
+
+    expect(box()).toBe(`${CEILING}px`);
+    expect(overflow()).toBe("auto");
   });
 
   it("stops observing when the textarea goes away", () => {

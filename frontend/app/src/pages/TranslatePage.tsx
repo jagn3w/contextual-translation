@@ -30,31 +30,51 @@ type Translation = NonNullable<TranslateMutation["translate"]["translation"]> & 
  * Keeping the text with the language is what makes the swap button a pure exchange of language
  * codes, so swapping twice is exactly identity.
  *
- * `answer` is the response that put that `target` there, and it lives here — with the text — for
- * the same reason the text does. Everything Claude sends *about* an answer (the readings, the
- * definitions, the note, the shortfall flags) describes one particular stretch of one particular
- * language, so it has to travel with that stretch or it is lost the moment anything else is
- * translated. Held in a single page-wide slot it was: translate EN→JA, switch the target to
- * Spanish, translate EN→ES, switch back — the Japanese is still sitting in its buffer, unchanged
- * and still the answer to the same source, context and level, but its furigana and its note had
- * been overwritten by the Spanish answer and the pane marked it out of date besides, pushing the
- * reader into a re-translate against a 20/min, 300/day cap for text that had not changed.
+ * The answers that response put that `target` there live here too — with the text — for the same
+ * reason the text does. Everything Claude sends *about* an answer (the readings, the definitions,
+ * the note, the shortfall flags) describes one particular stretch of one particular language, so
+ * it has to travel with that stretch or it is lost the moment anything else is translated. Held in
+ * a single page-wide slot it was: translate EN→JA, switch the target to Spanish, translate EN→ES,
+ * switch back — the Japanese is still sitting in its buffer, unchanged and still the answer to the
+ * same source, context and level, but its furigana and its note had been overwritten by the
+ * Spanish answer and the pane marked it out of date besides, pushing the reader into a
+ * re-translate against a 20/min, 300/day cap for text that had not changed.
  *
- * Both languages of a pair record the same answer: the one that received the translation and the
- * one it was translated out of. Which role a language played is read back off
- * `answer.targetLanguage`, so the side holding the *source* text never wears the ruby, notes or
- * flags that belong to the output — and `matchesLastResponse` can still recognise a swapped pair,
- * because after a swap the pane's own buffer is the one that recorded the answer from the other
- * side. A later answer out of a language replaces its `answer` unconditionally, because that
- * answer's source text is what `target` now holds and the old annotation may no longer be over it.
+ * Both languages of a pair record the answer, because both are needed later: the one that received
+ * the translation, so the ruby and the note can be put back over it, and the one it was translated
+ * out of, so a swapped pane can still tell it is looking at the pair Claude answered. They are two
+ * separate slots rather than one, because a language plays both roles in turn and each role's
+ * answer stays true for a different reason. `answerInto` is the answer that *wrote* this language's
+ * `target`, and it is the only one that may speak about that text — the readings are over it, the
+ * gloss offsets are into it, the note is about it. `answerOutOf` is the answer that was made *from*
+ * this language's `target`; it says nothing about the text itself, only that this text was what
+ * Claude was handed.
+ *
+ * One slot for both was the bug: a JA→EN answer landed in Japanese's only slot and evicted the
+ * EN→JA answer whose furigana was over the very same, byte-for-byte unchanged Japanese. Swap,
+ * Update Translation, swap back and the Japanese pane repainted itself bare — no ruby, no glosses,
+ * no note — while `matchesLastResponse` still recognised the swapped pair and so painted it up to
+ * date, i.e. claiming to be current while showing strictly less than it had three clicks earlier.
+ * With a slot per role neither answer can evict the other, and an annotation is dropped only when
+ * the text it describes actually changes: `showingResponseOutput` compares `answerInto.text` with
+ * what the pane is showing, which is what the source-role write-back moves out from under it.
+ *
+ * Which slot an answer sits in *is* the role it played, so `answerInto.targetLanguage` is always
+ * this language and `answerOutOf.sourceLanguage` always is too. Nothing re-derives a role from the
+ * payload; that read-it-back-off-the-answer test is what the eviction above used to defeat.
  */
-type LanguageBuffer = { input: string; target: string; answer: Translation | null };
+type LanguageBuffer = {
+  input: string;
+  target: string;
+  answerInto: Translation | null;
+  answerOutOf: Translation | null;
+};
 type Buffers = Record<Language, LanguageBuffer>;
 
 const EMPTY_BUFFERS: Buffers = {
-  EN: { input: "", target: "", answer: null },
-  ES: { input: "", target: "", answer: null },
-  JA: { input: "", target: "", answer: null },
+  EN: { input: "", target: "", answerInto: null, answerOutOf: null },
+  ES: { input: "", target: "", answerInto: null, answerOutOf: null },
+  JA: { input: "", target: "", answerInto: null, answerOutOf: null },
 };
 
 /** The buffers with one language replaced; every other language keeps the text it was holding. */
@@ -182,7 +202,11 @@ export function TranslatePage({ onSignOut }: Props) {
   // The one response this pane is a view of: the one that last wrote the text it is showing. It is
   // read from the pane's own buffer rather than from a page-wide "last translation", so an answer
   // in another direction cannot speak for — or about — the text sitting here (see LanguageBuffer).
-  const answer = buffers[targetLanguage].answer;
+  const answer = buffers[targetLanguage].answerInto;
+  // And the answer that was made *from* the text in this pane, which is a different fact about the
+  // same language and so has a slot of its own. It is what a swapped pair is judged against: it
+  // never describes the text on screen, so it is kept away from the annotations below.
+  const answerOutOf = buffers[targetLanguage].answerOutOf;
   // Neither editable box scrolls: each grows with the text it holds (design D1.4), and the
   // result pane beside the source one is a plain div, so it has always grown.
   const sourceRef = useAutoGrowTextarea(sourceText);
@@ -191,19 +215,29 @@ export function TranslatePage({ onSignOut }: Props) {
   // there — in either direction, since a swap only exchanges the language codes — under the same
   // context. The gloss level is an input to the answer like the context is — Claude picks the words
   // and writes the definitions — so changing it dates the result on screen instead of re-glossing
-  // it. The test itself is unchanged from when there was one page-wide translation; only where the
-  // answer comes from has moved, and that is the whole of the fix: a Japanese pane is now judged
-  // against the answer that wrote the Japanese, not against whatever was translated most recently.
+  // it. A Japanese pane is judged against the answers that involved the Japanese, not against
+  // whatever was translated most recently.
+  //
+  // Two ways to be current, one per role, and each asks about *both* boxes rather than only the
+  // editable one. Unswapped: the pane is showing this answer's output and the source box still
+  // holds what it was made from. Swapped: the pane is showing the text this answer was made from
+  // and the source box holds what it produced. The half naming the result pane is what the single
+  // shared slot used to give for free — text and answer were written together, so the text could
+  // not drift from the answer beside it. With a slot per role the two can be written by different
+  // responses, so the freshness test says out loud what it needs of the text it is vouching for.
   const matchesLastResponse =
-    answer !== null &&
-    answer.fromContext === context &&
-    answer.fromGlossLevel === glossLevel &&
-    ((sourceLanguage === answer.sourceLanguage &&
-      targetLanguage === answer.targetLanguage &&
-      sourceText === answer.fromText) ||
-      (sourceLanguage === answer.targetLanguage &&
-        targetLanguage === answer.sourceLanguage &&
-        sourceText === answer.text));
+    (answer !== null &&
+      answer.fromContext === context &&
+      answer.fromGlossLevel === glossLevel &&
+      sourceLanguage === answer.sourceLanguage &&
+      sourceText === answer.fromText &&
+      resultText === answer.text) ||
+    (answerOutOf !== null &&
+      answerOutOf.fromContext === context &&
+      answerOutOf.fromGlossLevel === glossLevel &&
+      sourceLanguage === answerOutOf.targetLanguage &&
+      sourceText === answerOutOf.text &&
+      resultText === answerOutOf.fromText);
   const stale = resultText !== "" && !matchesLastResponse;
   // Everything Claude sent *about* its answer — the notes, the readings, the definitions — belongs
   // to the text it answered *with*, and stays true for exactly as long as that text is on screen in
@@ -221,8 +255,12 @@ export function TranslatePage({ onSignOut }: Props) {
   // response is a trap for whoever edits this next. That the pickers have moved on is `stale`'s
   // job — and `stale` now says so in words, so a note read under a changed direction is read with
   // the "Out of date" marker already beside it.
-  const showingResponseOutput =
-    answer !== null && targetLanguage === answer.targetLanguage && resultText === answer.text;
+  //
+  // One test, and it is about the text alone: does the pane still show the very characters this
+  // answer produced? The language no longer needs asking, `answerInto` being by construction an
+  // answer *into* this language (see LanguageBuffer) — and it used to be asked of an answer that
+  // could have been the source-role one, which is how a pane of unchanged Japanese lost its ruby.
+  const showingResponseOutput = answer !== null && resultText === answer.text;
   const responseNotes = showingResponseOutput ? answer.notes : null;
   // Null whenever the backend had no readings to give (design D2.3) — a non-Japanese target, or
   // Japanese it couldn't annotate — and the pane falls back to plain text.
@@ -233,26 +271,39 @@ export function TranslatePage({ onSignOut }: Props) {
   // Claude stopped glossing before the translation ended, so the reader is told rather than left
   // to conclude the untouched half of the sentence held nothing worth defining.
   const glossesTruncated = showingResponseOutput && answer.glossesTruncated;
-  // The readings were never asked for, because the source was past the length the backend will
-  // annotate (design D2.3). Same reason to say so: with nothing on screen to distinguish it, a
-  // pane of bare Japanese reads as "Claude found no kanji here" rather than "you didn't get this
-  // part" — and the definitions, which the length switch leaves alone, are still there implying
-  // the answer was annotated. Both flags ride on `showingResponseOutput`, so neither can end up
-  // describing a response the pane has stopped showing.
+  // The target was Japanese and no readings came back with it (design D2.3). The backend sets this
+  // for every way that can happen — the length gate never asked for them, or what came back was
+  // rejected (a translation carrying literal 《…》 punctuation, readings that failed validation) —
+  // and does not say which, so neither may this pane. Same reason to say so whichever it was: with
+  // nothing on screen to distinguish it, a pane of bare Japanese reads as "Claude found no kanji
+  // here" rather than "you didn't get this part" — and the definitions, which none of those causes
+  // touches, are still there implying the answer was annotated. Both flags ride on
+  // `showingResponseOutput`, so neither can end up describing a response the pane has stopped
+  // showing.
   const readingsOmitted = showingResponseOutput && answer.readingsOmitted;
-  // What this answer didn't carry, in one paragraph rather than a stack of notices. The two have
-  // different causes — the source's length for the readings, a per-answer cap on entries for the
-  // definitions — so they stay separate sentences instead of being merged into one claim, but
-  // they are one thing to tell the reader: this is annotated less than the pane implies.
+  // What this answer didn't carry, in one paragraph rather than a stack of notices. The two are
+  // unrelated — a per-answer cap on entries is what runs out for the definitions, and has nothing
+  // to do with why the readings aren't here — so they stay separate sentences instead of being
+  // merged into one claim, but they are one thing to tell the reader: this is annotated less than
+  // the pane implies.
   const shortfalls: string[] = [];
-  // "over the translation" is load-bearing, not padding. The backend's length gate is furigana-only:
-  // the prompt tells Claude in as many words that the glosses are unaffected, and `gloss_from` keeps
-  // each gloss's `reading` for any Japanese target — so in this very pane, under this very notice,
-  // hovering a defined word still shows its kana. The sentence therefore claims only what was
-  // actually given up, the ruby over the translation, and stops: "this translation has none" read as
-  // a claim about the whole answer, and was contradicted by the first word the reader hovered.
+  // Two things to say and no third. First: this answer has no readings over it — which is all the
+  // flag knows, so naming a cause the pane can't see ("the text was too long", as this read until
+  // the flag widened past the length gate) would be a guess printed as fact. Second, and the reason
+  // the sentence exists at all: it is not that the Japanese has no kanji to read. Bare Japanese
+  // looks exactly the same either way, so without the denial the reader concludes the kinder,
+  // wronger thing and never learns something was missing.
+  //
+  // "over the translation" is load-bearing, not padding. Whatever dropped the furigana leaves the
+  // glosses alone — `gloss_from` keeps each gloss's `reading` for any Japanese target — so in this
+  // very pane, under this very notice, hovering a defined word still shows its kana. The sentence
+  // therefore claims only what was actually given up, the ruby over the translation, and stops:
+  // "this translation has none" read as a claim about the whole answer, and was contradicted by the
+  // first word the reader hovered.
   if (readingsOmitted) {
-    shortfalls.push("The text was too long to ask for kana readings over the translation, so it has none.");
+    shortfalls.push(
+      "No kana readings came with this answer, so there are none over the translation. It isn't that the Japanese has no kanji to read.",
+    );
   }
   if (glossesTruncated) {
     shortfalls.push(
@@ -369,19 +420,29 @@ export function TranslatePage({ onSignOut }: Props) {
           // out of date beside the draft, `stale` keying on the pane's text rather than on this.
           //
           // `target` is not a draft but a record of the text of this language Claude has now seen,
-          // so it is written on both sides unconditionally — and `answer` goes with it on both
-          // sides, being the record of how that text got there. The source side writing it too is
-          // what keeps a swapped pane up to date: after the swap the pane shows this language's
-          // `target`, and this is the answer that put it there.
+          // so it is written on both sides unconditionally — and this answer is recorded on both
+          // sides too, each in the slot for the role the language played here (see LanguageBuffer).
+          // The source side's record is what keeps a swapped pane up to date: after the swap that
+          // pane shows this language's `target`, which is exactly what Claude was handed.
+          //
+          // Each side writes its own slot and leaves the other alone, which is the fix: the
+          // language being translated *out of* here may be holding, in `answerInto`, the answer
+          // that put its text there in the first place — furigana, glosses and all — and this
+          // answer is no evidence against that one. It is only evidence about text, so the pane
+          // checks the text: if this request's `sent.text` is not what that older answer returned,
+          // `showingResponseOutput` sees the mismatch and drops the annotation by itself. The
+          // unconditional replace that used to stand here threw the annotation away even when
+          // `target` came out byte-for-byte identical, which is precisely when it was still true.
           const source = current[sent.source];
           const target = current[sent.target];
           return withBuffer(
-            withBuffer(current, sent.source, { input: source.input, target: sent.text, answer: settled }),
+            withBuffer(current, sent.source, { ...source, target: sent.text, answerOutOf: settled }),
             sent.target,
             {
+              ...target,
               input: target.input === sent.targetInput ? result.text : target.input,
               target: result.text,
-              answer: settled,
+              answerInto: settled,
             },
           );
         });
@@ -471,7 +532,14 @@ export function TranslatePage({ onSignOut }: Props) {
                   onChange={(event) => editSource(event.target.value)}
                   aria-invalid={sourceTooLong}
                   placeholder="Type or paste text…"
-                  className="block min-h-72 w-full resize-none overflow-hidden bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60 focus:outline-none"
+                  // The pane grows with the text (design D1.4) but stops at roughly two thirds of
+                  // the viewport and scrolls from there, so the gloss picker, the counter and Update
+                  // Translation below it stay on screen. A 10,000-character paste is inside the
+                  // limit and would otherwise put them ~10,000px down — and past the limit the
+                  // button is disabled with the only explanation ("Too long to translate — …")
+                  // down there with it. The hook reads this number off the element rather than
+                  // holding its own copy, so the ceiling lives here with the rest of the layout.
+                  className="block max-h-[65vh] min-h-72 w-full resize-none overflow-hidden bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60 focus:outline-none"
                 />
                 {/* The request's two quiet settings live where the text is typed: the picker on the
                     left, the count keeping its right edge. */}
