@@ -60,9 +60,11 @@ check_backend() {
   bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error
   RAILS_ENV=test bin/rails db:prepare >/dev/null
   # Tapioca loads the app (models read their columns from the database), so this runs after
-  # db:prepare. sorbet/tapioca/config.yml pins it to the test environment.
+  # db:prepare. sorbet/tapioca/config.yml pins it to the test environment. CI is unset because
+  # the test environment eager-loads when it is set, which loads Rails::HealthController and
+  # Rails::ApplicationController, so CI would expect two RBIs a local `bin/tapioca dsl` never writes.
   step "Backend: Sorbet DSL RBIs are up to date"
-  bundle exec tapioca dsl --verify
+  env -u CI bundle exec tapioca dsl --verify
   step "Backend: tests (includes the schema.graphql drift check)"
   bin/rails test
 }
