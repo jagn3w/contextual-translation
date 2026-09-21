@@ -81,8 +81,10 @@ A request to `/graphql` or `/api/session` passes through, in order:
      Rails' `request.content_length` would read the whole chunked body into memory to measure it.
      Nothing legitimate is refused, since browsers' `fetch` sends `Content-Length` for the string
      bodies the SPA sends, as do curl and `bin/smoke`, and a bodiless `DELETE` carries neither
-     header. Puma itself buffers a chunked body and hands Rails a `Content-Length` request, so in
-     production this is a second line of defence.
+     header. Under Puma neither branch sees a chunked body: Puma decodes it and removes
+     `Transfer-Encoding` before Rails runs, and its own `http_content_length_limit`
+     (`config/puma.rb`, the same 64 KB) refuses an oversized body of either kind with a 413 before
+     buffering it. This check is what holds on any other server, and in the test stack.
    - `RequestOriginCheck`: the CSRF defence, below.
    - `Authentication` itself adds no before-action; it provides `current_session`.
 4. **The controller.** `GraphqlController` has `before_action :require_session`, which answers

@@ -33,6 +33,12 @@ threads threads_count, threads_count
 # Specifies the `port` that Puma will listen on to receive requests; default is 3000.
 port ENV.fetch("PORT", 3000)
 
+# Puma refuses a body over this with a 413 before buffering it. That matters for chunked bodies:
+# Puma decodes them itself, buffering to disk with no bound, and hands Rails an ordinary
+# Content-Length request, so Rails' own check (RequestSizeLimit::MAX_BODY_BYTES, the same 64 KB)
+# would only see one after it had been read in full.
+http_content_length_limit 64 * 1024
+
 # Allow puma to be restarted by `bin/rails restart` command.
 plugin :tmp_restart
 

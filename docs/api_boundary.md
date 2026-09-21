@@ -275,8 +275,8 @@ Their bodies are plain JSON, not GraphQL-shaped. In the order they run:
 | --- | --- | --- | --- |
 | 429 | `{"error":"rate_limited","retryAfterSeconds":N}` + `Retry-After` | rack-attack throttles | Over 60 `/graphql` requests a minute from one IP, or the sign-in throttles |
 | 429 | `{"error":"too_many_failed_attempts","retryAfterSeconds":N}` + `Retry-After` | rack-attack blocklist | IP banned from `POST /api/session` after repeated failed codes |
-| 411 | `{"error":"length_required"}` | `RequestSizeLimit` | A `Transfer-Encoding` header (a chunked body without `Content-Length`); browsers' `fetch`, curl and `bin/smoke` never send one |
-| 413 | `{"error":"payload_too_large"}` | `RequestSizeLimit` | `Content-Length` over 64 KB |
+| 411 | `{"error":"length_required"}` | `RequestSizeLimit` | A `Transfer-Encoding` header (a chunked body without `Content-Length`); browsers' `fetch`, curl and `bin/smoke` never send one, and under Puma it never reaches Rails (Puma decodes chunked bodies itself) |
+| 413 | `{"error":"payload_too_large"}` from `RequestSizeLimit`; under Puma, usually Puma's own plain 413 first | `RequestSizeLimit`, and Puma's `http_content_length_limit` (`backend/config/puma.rb`) | A body over 64 KB (the client tolerates the non-JSON body) |
 | 415 | `{"error":"unsupported_media_type"}` | `RequestOriginCheck` | A non-GET/HEAD request whose media type is not `application/json` |
 | 403 | `{"error":"forbidden_origin"}` | `RequestOriginCheck` | A non-GET/HEAD request whose `Origin` header is missing or not the app's own |
 | 401 | `UNAUTHENTICATED` (GraphQL-shaped, above) | `GraphqlController` | No session (only on `/graphql`) |

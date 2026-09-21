@@ -9,8 +9,10 @@
 # refused with 411 Length Required instead of measured: Rails' own `request.content_length` reads
 # the whole chunked body into memory to count it, which is the cost this check exists to avoid.
 # Nothing legitimate is lost. Browsers' fetch sends Content-Length for string bodies, which is all
-# the SPA sends, and so do curl and bin/smoke. (Puma itself buffers a chunked body and turns it
-# into a Content-Length request before Rails sees it, so in production this is a second line.)
+# the SPA sends, and so do curl and bin/smoke. Under Puma neither branch sees a chunked body:
+# Puma decodes it and removes Transfer-Encoding before Rails runs, and its own
+# http_content_length_limit (config/puma.rb, the same 64 KB) refuses an oversized one of either
+# kind first. This check is what holds on any other server, and in the test stack.
 module RequestSizeLimit
   extend T::Sig
   extend T::Helpers
