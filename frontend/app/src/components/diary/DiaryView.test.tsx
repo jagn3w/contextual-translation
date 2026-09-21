@@ -154,6 +154,31 @@ describe("DiaryView", () => {
     expect(within(card).getByRole("button", { name: "Resolve" })).toBeEnabled();
   });
 
+  it("scrolls a reply that lands in the card into view", async () => {
+    const user = userEvent.setup();
+    const handlers = actions();
+    const view = (selected: DiaryEntry) => (
+      <DiaryView entries={[selected]} selectedId={ENTRY_ID} entry={selected} entryLoading={false} actions={handlers} now={NOW} />
+    );
+    const { rerender } = render(view(reviewed()));
+    await user.click(screen.getByRole("button", { name: /^Needs fixing:/ }));
+    const card = await screen.findByRole("dialog");
+    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    // Opening the card brings nothing into view: only a comment that arrives while it is open.
+    expect(scrolled).not.toHaveBeenCalled();
+
+    const answered = reviewed();
+    const [wrong] = answered.threads;
+    if (wrong === undefined) throw new Error("no thread");
+    wrong.comments = [...wrong.comments, comment("LEARNER", "Is it に?"), comment("TUTOR", "Yes: 山に行きました.")];
+    rerender(view(answered));
+
+    const newest = within(card).getByText("Yes: 山に行きました.").closest("li");
+    expect(scrolled).toHaveBeenCalledTimes(1);
+    expect(scrolled.mock.contexts[0]).toBe(newest);
+    scrolled.mockRestore();
+  });
+
   it("keeps Resolve disabled while a hint is on its way", async () => {
     let finish: () => void = () => undefined;
     const onRequestHint = vi.fn(() => new Promise<boolean>((resolve) => (finish = () => resolve(true))));

@@ -95,9 +95,11 @@ export function SentenceHighlight({ thread, text, actions, notesLanguage }: Prop
           sideOffset={6}
           collisionPadding={8}
           aria-label={`Feedback: ${label}`}
-          className="z-50 w-80 max-w-[calc(100vw-1rem)] rounded-lg border border-line bg-canvas p-3 text-left shadow-lg"
+          // The card sits fixed over the page, so scrolling the page can't reach a part of it that
+          // runs off the screen: it stops at the room Radix measured and scrolls its own contents.
+          className="z-50 max-h-[var(--radix-popover-content-available-height)] w-80 max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-lg border border-line bg-canvas px-3 pb-3 text-left shadow-lg"
         >
-          <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="sticky top-0 z-10 mb-2 flex items-center justify-between gap-2 bg-canvas pt-3 pb-1">
             <VerdictBadge verdict={thread.verdict} resolved={thread.resolved} />
             <Popover.Close aria-label="Close" className="focus-ring rounded-md px-1.5 text-muted hover:bg-surface hover:text-ink">
               ×
