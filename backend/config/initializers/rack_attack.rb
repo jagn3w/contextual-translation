@@ -12,8 +12,9 @@
 # runs, so "/api/session/", "//api/session" and "/api//session" match the exact-path rules
 # below (verified in rack-attack 6.8; guarded by rack_attack_test.rb).
 #
-# Translation limits are NOT here: they are per session and per access code, enforced inside the
-# translate mutation so they can return a typed RATE_LIMITED error (D3.4).
+# The limits on Claude calls are NOT here: they are per session and per access code, enforced by
+# Translation::RateLimiter, which Translation::Service and Diary::Service call before every
+# translation and every diary tutor call, so they can return a typed RATE_LIMITED error (D3.4).
 class Rack::Attack
   SESSION_PATH = "/api/session"
 
@@ -35,7 +36,7 @@ class Rack::Attack
     req.post? && req.path == SESSION_PATH && LoginBan.banned?(req.ip)
   end
 
-  # A coarse cap on the GraphQL endpoint per IP; the real translation limits live in the mutation.
+  # A coarse cap on the GraphQL endpoint per IP; the real Claude-call limits are in RateLimiter.
   throttle("graphql/ip/minute", limit: 60, period: 1.minute) do |req|
     req.ip if req.path == "/graphql"
   end

@@ -595,6 +595,23 @@ class Translation::ClaudeTranslatorTest < ActiveSupport::TestCase
     assert_requested stub, times: 1
   end
 
+  test "the usage log times the call with the injected clock" do
+    now = 100.0
+    log = StringIO.new
+    translator = Translation::ClaudeTranslator.new(
+      client: Anthropic::Client.new(api_key: "k", max_retries: 0, timeout: 5),
+      logger: ActiveSupport::Logger.new(log), sleeper: ->(_) { }, clock: -> { now }
+    )
+    stub_request(:post, MESSAGES_URL).to_return do
+      now += 2.5
+      message_response(translation: "¿Esto es un bate?")
+    end
+
+    translator.translate(@request)
+
+    assert_match(/Claude translation .* ms=2500 /, log.string)
+  end
+
   test "network failures outside the SDK's transport are UPSTREAM_UNREACHABLE" do
     [ Seahorse::Client::NetworkingError.new(Errno::ECONNRESET.new), Net::OpenTimeout.new, SocketError.new("dns"),
       Errno::ECONNREFUSED.new ].each do |raw|

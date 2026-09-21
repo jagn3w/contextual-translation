@@ -31,6 +31,7 @@ describe("describeRequestError", () => {
   it("maps the Origin check and body-size limit", () => {
     expect(describeRequestError(serverError(403, { error: "forbidden_origin" }))).toEqual({ kind: "blocked" });
     expect(describeRequestError(serverError(415, { error: "unsupported_media_type" }))).toEqual({ kind: "blocked" });
+    expect(describeRequestError(serverError(411, { error: "length_required" }))).toEqual({ kind: "blocked" });
     expect(describeRequestError(serverError(413, { error: "payload_too_large" }))).toEqual({ kind: "payloadTooLarge" });
     expect(describeRequestError(serverError(502, "<html>Bad gateway</html>"))).toEqual({ kind: "server", status: 502 });
   });
@@ -45,6 +46,24 @@ describe("describeRequestError", () => {
 
     expect(describeRequestError(internal)).toEqual({ kind: "internal", reference: "ab12cd34" });
     expect(describeRequestError(unauthenticated)).toEqual({ kind: "unauthenticated" });
+  });
+
+  it("gives the diary's deliberate refusals their own kinds", () => {
+    const notFound = new CombinedGraphQLErrors({ errors: [{ message: "Not found", extensions: { code: "NOT_FOUND" } }] });
+    const invalid = new CombinedGraphQLErrors({
+      errors: [{ message: "Languages can't change", extensions: { code: "INVALID" } }],
+    });
+
+    expect(describeRequestError(notFound)).toEqual({ kind: "notFound" });
+    expect(describeRequestError(invalid)).toEqual({ kind: "invalid" });
+  });
+
+  it("treats a validation error, which has no code, as internal without a reference", () => {
+    const validation = new CombinedGraphQLErrors({
+      errors: [{ message: "Field 'nope' doesn't exist on type 'Query'" }],
+    });
+
+    expect(describeRequestError(validation)).toEqual({ kind: "internal", reference: null });
   });
 
   it("treats anything else as a network failure", () => {

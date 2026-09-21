@@ -2,11 +2,15 @@ import { assertNever } from "./assertNever.ts";
 import { formatWait } from "./formatWait.ts";
 import type { RequestFailure } from "./requestFailure.ts";
 
-/** A user-facing sentence for a request failure outside the typed translate errors (D3.3). */
+/** A user-facing sentence for a request failure outside a mutation's typed errors. */
 export function failureMessage(failure: RequestFailure): string {
   switch (failure.kind) {
     case "unauthenticated":
       return "Your session ended. Enter the access code again.";
+    case "notFound":
+      return "That no longer exists.";
+    case "invalid":
+      return "That change isn't allowed.";
     case "rateLimited":
       return failure.retryAfterSeconds === null
         ? "Too many requests. Wait a few minutes and try again."

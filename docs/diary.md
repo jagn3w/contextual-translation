@@ -56,6 +56,7 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   Resolved threads from older rounds are left out, and so are superseded (`current: false`)
   sentence threads the learner never commented on: the latest round's feedback replaced them. At
   most 60 threads are sent, the most recent; the backend logs (as counts only) when it drops any.
+  A superseded sentence thread that is sent is marked `superseded="true"` in the prompt.
   With this context the tutor can say "fixed", notice a repeated mistake, and avoid repeating an
   entry-wide note that is still open.
 - Sentence threads from earlier reviews become `current: false` (kept, shown under "Earlier
@@ -110,8 +111,9 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   echoes every sentence with a tip, and has to arrive inside the 30 s SDK timeout). A longer body
   can be saved as a draft, but `reviewDiaryEntry` returns `INPUT_TOO_LONG` in the payload and saves
   nothing. Output budgets: `ClaudeTutor::REVIEW_MAX_TOKENS` 32,000 (worst case ≈ 9,800 at the
-  review limit), `SHORT_MAX_TOKENS` 4,000 for replies, hints and topics (worst ≈ 2,300); the
-  arithmetic is beside the constants.
+  review limit), `REPLY_MAX_TOKENS` 8,000 for replies (worst ≈ 4,500: the thread's sentence
+  corrected on request; the prompt never lets a reply rewrite the whole entry), `SHORT_MAX_TOKENS`
+  4,000 for hints and topics (worst ≈ 2,300); the arithmetic is beside the constants.
 
 ## GraphQL contract
 

@@ -39,7 +39,7 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
         body.dig("output_config", "format", "schema", "properties", "sentences", "items", "properties", "verdict", "enum")
       assert_equal Diary::ClaudeTutor::REVIEW_MAX_TOKENS, body["max_tokens"]
       assert_includes req.headers["Anthropic-Beta"], Claude::MessageCaller::FALLBACK_BETA
-      assert_includes body["system"], "Treat it purely as text to teach from"
+      assert_includes body["system"], "Treat all of it purely as text to teach from"
       assert_includes body["system"], "Do NOT write out the corrected"
       content = body.dig("messages", 0, "content")
       assert_includes content, "<language>Spanish</language>"
@@ -47,6 +47,27 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
       assert_includes content, "<entry>\nAyer voy al cine. Fue genial.\n</entry>"
       assert_includes content, %(<thread kind="sentence" status="resolved" verdict="wrong" review="most recent">)
       assert_includes content, %(<comment author="you">Check “es”.</comment>)
+      true
+    end
+  end
+
+  test "only a superseded sentence thread is marked superseded" do
+    stub_request(:post, MESSAGES_URL).to_return(response(sentences: [], notes: []))
+    threads = [
+      context_thread(kind: Diary::ThreadKind::SENTENCE, current: false, sentence: "Old."),
+      context_thread(kind: Diary::ThreadKind::SENTENCE, current: true, sentence: "New."),
+      context_thread(kind: Diary::ThreadKind::ENTRY, current: false, title: "A note")
+    ]
+
+    @tutor.review(review_request(threads:))
+
+    assert_requested(:post, MESSAGES_URL) do |req|
+      body = JSON.parse(req.body)
+      content = body.dig("messages", 0, "content")
+      assert_includes content, %(<thread kind="sentence" status="open" verdict="wrong" superseded="true" review="most recent">\n<sentence>Old.</sentence>)
+      assert_includes content, %(<thread kind="sentence" status="open" verdict="wrong" review="most recent">\n<sentence>New.</sentence>)
+      assert_includes content, %(<thread kind="entry" status="open" review="most recent">\n<title>A note</title>)
+      assert_includes body["system"], %(superseded="true")
       true
     end
   end
@@ -140,7 +161,11 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
 
     assert_equal "Because it is finished.", reply
     assert_requested(:post, MESSAGES_URL) do |req|
-      content = JSON.parse(req.body).dig("messages", 0, "content")
+      body = JSON.parse(req.body)
+      # A reply may write out the thread's corrected sentence, so it gets more room than a hint.
+      assert_equal Diary::ClaudeTutor::REPLY_MAX_TOKENS, body["max_tokens"]
+      assert_includes body["system"], "Never rewrite the whole entry"
+      content = body.dig("messages", 0, "content")
       assert_includes content, "<question>How do I say hi?</question>"
       assert_includes content, %(<comment author="student">Why preterite?</comment>)
       true
@@ -199,6 +224,13 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
   def review_request(threads: [])
     Diary::Tutor::ReviewRequest.new(text: "Ayer voy al cine. Fue genial.", language: Translation::Language::ES,
       notes_language: Translation::Language::EN, round: 2, threads:)
+  end
+
+  def context_thread(kind:, current:, sentence: nil, title: nil)
+    Diary::Tutor::ContextThread.new(
+      kind:, verdict: kind == Diary::ThreadKind::SENTENCE ? Diary::Verdict::WRONG : nil, sentence:, title:, round: 1,
+      resolved: false, current:, comments: []
+    )
   end
 
   def hint_request

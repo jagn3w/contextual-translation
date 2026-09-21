@@ -24,7 +24,8 @@ contract (schema dump, drift test, codegen, error model, ids) in
   `exactOptionalPropertyTypes`, `verbatimModuleSyntax` and `erasableSyntaxOnly` among others.
   `erasableSyntaxOnly` rules out TypeScript `enum`s, which is why codegen emits GraphQL enums as
   string unions. Imports spell the `.ts`/`.tsx` extension (`allowImportingTsExtensions`).
-  `tsconfig.node.json` covers `vite.config.ts`; `tsconfig.json` only references the two.
+  `tsconfig.node.json` covers `vite.config.ts` and `codegen.ts`; `tsconfig.json` only references
+  the two.
 
 ## Dev server and the one-origin rule
 
@@ -148,10 +149,11 @@ every HTML path, so paths are real URLs — reloadable, bookmarkable, back-butto
 A request fails in one of two ways, and each has one place that words it.
 
 1. **Outright failures** — a top-level GraphQL error, an HTTP error from the session endpoint,
-   rack-attack's 429, the Origin/content-type check's 403/415, a 413, a network error.
+   rack-attack's 429, the Origin/content-type check's 403/415, the size check's 411, a 413, a network error.
    `frontend/app/src/lib/requestFailure.ts` classifies them into the `RequestFailure` union
-   (`unauthenticated`, `rateLimited` with `retryAfterSeconds`, `blocked`, `payloadTooLarge`,
-   `internal` with a server `reference`, `network`, `server` with a status):
+   (`unauthenticated`, `notFound` and `invalid` for the `NOT_FOUND` and `INVALID` codes,
+   `rateLimited` with `retryAfterSeconds`, `blocked`, `payloadTooLarge`, `internal` with a server
+   `reference` — also a validation error, which has no code — `network`, `server` with a status):
    `describeRequestError` for anything Apollo throws, `failureFromResponse` for a raw `Response`.
    `frontend/app/src/lib/failureMessage.ts` turns one into a sentence.
 2. **Anticipated failures** — the typed `errors: [TranslateError!]!` in a mutation's payload.
@@ -159,8 +161,13 @@ A request fails in one of two ways, and each has one place that words it.
    `diaryErrorMessage` in `frontend/app/src/pages/DiaryPage.tsx` rewords the codes whose translation wording
    would be wrong for a diary (the input checks, `REFUSED`, `OUTPUT_TOO_LONG`, `TIMEOUT`) and
    defers to `translateErrorMessage` for the rest, so "Claude is busy" reads the same on both
-   pages. The diary also maps two top-level codes it raises on purpose, `NOT_FOUND` and
-   `INVALID`, to their own sentences rather than "Something unexpected went wrong".
+   pages. The Phrases limits in the `INPUT_TOO_LONG` message come from the same constants as its
+   counters (`frontend/app/src/lib/translateLimits.ts`), as the diary's do from `lib/diary.ts`.
+
+The diary's `reportFailure` words the two classified kinds only it can meet in diary terms —
+`notFound` as "This entry doesn't exist any more.", `invalid` as "The languages can't change once
+an entry has had feedback." — and passes every other kind to `failureMessage`. An autosave that
+lands after its entry was deleted drops its `notFound` without a toast.
 
 Every one of these is an exhaustive `switch` ending in `assertNever` (`frontend/app/src/lib/assertNever.ts`):
 a new failure kind or a new error code in the schema breaks the build until it has a message.
@@ -227,8 +234,9 @@ component that asked keeps the learner's text in place to try again.
 - **Focus.** The `focus-ring` utility (`@utility` in `index.css`) is the focus indicator: a 2px
   `--color-focus` outline, offset 2px, on `:focus-visible` only (clicks and taps stay quiet). An
   outline rather than a box-shadow ring traces the border radius, needs no offset colour and
-  survives forced-colours mode. New interactive controls use it; the few that don't yet are named
-  in the comment above it.
+  survives forced-colours mode. Every interactive control uses it except three deferred ones, named
+  with their reasons in the comment above it: the glossed word, the context textarea and the
+  access-code field.
 - **Verdicts.** Each diary verdict has a wash and a deeper "open" step (`--color-verdict-*`), and
   `frontend/app/src/components/diary/verdictStyles.ts` pairs each with its own underline style (wavy, dashed,
   solid) so colour is never the only cue. Class names there are written out in full so Tailwind's
@@ -282,8 +290,15 @@ component that asked keeps the learner's text in place to try again.
   `vi.unstubAllGlobals()` afterwards and set the starting URL with `history.replaceState`.
 - `installFakeDiary(server, initial)` (`frontend/app/src/test/fakeDiary.ts`) is a small in-memory diary behind
   the fake server: enough of the backend's behaviour that queries, mutations and cache updates run
-  end to end. Its objects carry `__typename`, because the cache normalises on it.
-  `frontend/app/src/test/diaryFixtures.ts` builds entries, threads and comments.
+  end to end. Its objects carry `__typename`, because the cache normalises on it, and random UUID
+  ids, as the server's are. It mirrors the backend's rules where the page depends on them: the
+  preview (12 words, at most 100 characters, or 40 characters for Japanese, "…" when cut), the
+  help-thread hint levels (a first answer to a question containing "want" is clarifying and leaves
+  the level where it was, as `Diary::FakeTutor` does), `NOT_FOUND`, `INVALID` on a language change
+  after feedback or help, and `SAME_LANGUAGE`.
+  `frontend/app/src/test/diaryFixtures.ts` builds entries, threads and comments, each with a random
+  UUID unless the test names one; a test that asserts on an id (a URL, a handler's arguments)
+  passes a fixed UUID literal held in a named constant.
 - Components with no data needs are also tested alone (`frontend/app/src/components/diary/DiaryView.test.tsx` renders `DiaryView`
   with stub actions); Radix `Select`s are driven by keyboard, as jsdom can't fire their pointer
   events.
@@ -320,7 +335,7 @@ From `frontend/`:
 
 | Command | What |
 |---|---|
-| `pnpm typecheck` | `tsc -b` over the app and `vite.config.ts` |
+| `pnpm typecheck` | `tsc -b` over the app, `vite.config.ts` and `codegen.ts` |
 | `pnpm test` | Vitest, once (`pnpm --filter app test:watch` to watch) |
 | `pnpm build` | typecheck and production build |
 | `pnpm codegen` | regenerate `frontend/app/src/gql/` after changing a `.graphql` file or `backend/schema.graphql`; commit the result |

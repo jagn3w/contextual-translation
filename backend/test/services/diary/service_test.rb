@@ -103,6 +103,8 @@ class Diary::ServiceTest < ActiveSupport::TestCase
     error = assert_raises(Translation::Error) { @service.review(@entry, "Hola.", session: @session) }
 
     assert_equal Translation::ErrorCode::RATE_LIMITED, error.code
+    # The limits are shared by both features, so the message must not talk about translating.
+    assert_equal "You're sending requests to Claude quickly.", error.message
   end
 
   test "input limits" do
@@ -181,6 +183,24 @@ class Diary::ServiceTest < ActiveSupport::TestCase
 
     assert_equal [ discussed, note, latest ].map(&:id), context.map(&:id)
     assert_not_includes context.map(&:id), silent.id
+  end
+
+  test "a superseded sentence thread reaches the tutor marked as no longer current" do
+    recorded = []
+    tutor = Diary::FakeTutor.new
+    tutor.define_singleton_method(:review) do |request|
+      recorded << request
+      Diary::FakeTutor.new.review(request)
+    end
+    @entry.update!(review_count: 2)
+    discussed = thread(round: 1, current: false)
+    discussed.comments.create!(author: "learner", body: "Why?")
+    thread(round: 2)
+
+    Diary::Service.new(tutor:, rate_limiter: Translation::RateLimiter.new(cache: @cache))
+      .review(@entry.reload, "Hola.", session: @session)
+
+    assert_equal [ false, true ], recorded.sole.threads.map(&:current)
   end
 
   test "the review context keeps the most recent threads up to the cap and logs how many it dropped" do

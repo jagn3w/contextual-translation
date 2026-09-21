@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../App.tsx";
 import { diaryErrorMessage } from "./DiaryPage.tsx";
@@ -49,14 +49,19 @@ async function writeAndReview(user: ReturnType<typeof userEvent.setup>, text = "
   await screen.findByRole("button", { name: /^Needs fixing:/ });
 }
 
+const MORNING_ID = "3e7a9c12-5b4d-4f8e-a6c1-0d2b4f6e8a97";
+const EVENING_ID = "b82f5d0c-9a3e-4c71-8e5b-1f4a7c9d2e60";
+/** An entry's URL: the id is a random UUID, as the server issues. */
+const ENTRY_PATH = /^\/diary\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const MORNING = entry({
-  id: "e1",
+  id: MORNING_ID,
   body: "朝ご飯を食べました。",
   preview: "朝ご飯を食べました。",
   createdAt: localIso(2026, 9, 20, 8, 0),
 });
 const EVENING = entry({
-  id: "e2",
+  id: EVENING_ID,
   language: "ES",
   notesLanguage: "EN",
   body: "Hoy fui al cine.",
@@ -79,11 +84,11 @@ describe("DiaryPage", () => {
 
     expect(await screen.findByText("Choose an entry, or start a new one.")).toBeInTheDocument();
     const links = await list().findAllByRole("link");
-    expect(links.map((link) => link.getAttribute("href"))).toEqual(["/diary/e2", "/diary/e1"]);
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([`/diary/${EVENING_ID}`, `/diary/${MORNING_ID}`]);
 
     await user.click(list().getByRole("link", { name: /朝ご飯/ }));
 
-    expect(window.location.pathname).toBe("/diary/e1");
+    expect(window.location.pathname).toBe(`/diary/${MORNING_ID}`);
     expect(await screen.findByLabelText("Diary entry")).toHaveValue("朝ご飯を食べました。");
     expect(list().getByRole("link", { name: /朝ご飯/ })).toHaveAttribute("aria-current", "page");
   });
@@ -94,7 +99,7 @@ describe("DiaryPage", () => {
 
     await user.click(screen.getByRole("button", { name: "New entry" }));
 
-    await waitFor(() => expect(window.location.pathname).toMatch(/^\/diary\/n\d+$/));
+    await waitFor(() => expect(window.location.pathname).toMatch(ENTRY_PATH));
     expect(variablesOf("CreateDiaryEntry")).toEqual({ language: "ES", notesLanguage: "EN" });
     expect(await screen.findByRole("combobox", { name: "Writing in" })).toHaveTextContent("Spanish");
     expect(list().getAllByRole("link")).toHaveLength(3);
@@ -112,14 +117,27 @@ describe("DiaryPage", () => {
   });
 
   it("autosaves as the learner writes and updates the list's preview", async () => {
-    const { user } = await openDiary("/diary/e1", [MORNING]);
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
 
     const box = await screen.findByLabelText("Diary entry");
     await user.type(box, "美味しかったです。");
 
     expect(await screen.findByText("Saved", {}, { timeout: 3000 })).toBeInTheDocument();
-    expect(variablesOf("SaveDiaryEntry")).toEqual({ id: "e1", body: "朝ご飯を食べました。美味しかったです。" });
+    expect(variablesOf("SaveDiaryEntry")).toEqual({ id: MORNING_ID, body: "朝ご飯を食べました。美味しかったです。" });
     expect(list().getByRole("link", { name: /美味しかったです/ })).toBeInTheDocument();
+  });
+
+  it("cuts a long entry's preview at twelve words, as the server does", async () => {
+    const empty = entry({ language: "ES", notesLanguage: "EN", body: "", preview: "" });
+    const { user } = await openDiary(`/diary/${empty.id}`, [empty]);
+
+    await user.click(await screen.findByLabelText("Diary entry"));
+    await user.paste("uno dos tres cuatro cinco seis siete ocho nueve diez once doce trece catorce");
+
+    expect(await screen.findByText("Saved", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(list().getByRole("link", { name: /uno dos/ })).toHaveTextContent(
+      "uno dos tres cuatro cinco seis siete ocho nueve diez once doce…",
+    );
   });
 
   it("gets feedback and draws each sentence's verdict, with the entry's notes beside it", async () => {
@@ -163,7 +181,7 @@ describe("DiaryPage", () => {
   });
 
   it("opens a help thread and asks for another hint", async () => {
-    const { user } = await openDiary("/diary/e1", [MORNING]);
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
     const panel = await screen.findByRole("region", { name: "Help me say…" });
 
     await user.type(within(panel).getByLabelText(/What do you want to say\?/), "How do I say I went hiking?");
@@ -175,8 +193,22 @@ describe("DiaryPage", () => {
     expect(await within(panel).findByText("Hint 2: key vocabulary.")).toBeInTheDocument();
   });
 
+  it("asks what an ambiguous question means before the first hint, which is still to come", async () => {
+    const { user, diary } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    const panel = await screen.findByRole("region", { name: "Help me say…" });
+
+    await user.type(within(panel).getByLabelText(/What do you want to say\?/), "How do I say I want a hamburger?");
+    await user.click(within(panel).getByRole("button", { name: "Ask" }));
+
+    expect(await within(panel).findByText("Which do you mean? (for: How do I say I want a hamburger?)")).toBeInTheDocument();
+    expect(diary.find(MORNING_ID)?.threads[0]?.hintLevel).toBe(0);
+    await user.click(within(panel).getByRole("button", { name: "Another hint" }));
+    expect(await within(panel).findByText("Hint 1: think about the past tense.")).toBeInTheDocument();
+    expect(diary.find(MORNING_ID)?.threads[0]?.hintLevel).toBe(1);
+  });
+
   it("suggests ideas in the entry's languages, following on from what is written", async () => {
-    const { user } = await openDiary("/diary/e1", [MORNING]);
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
 
     await user.click(await screen.findByRole("button", { name: "Get ideas" }));
 
@@ -186,7 +218,8 @@ describe("DiaryPage", () => {
   });
 
   it("sends the unsaved draft for ideas, and no body for an empty entry", async () => {
-    const { user } = await openDiary("/diary/e3", [entry({ id: "e3", body: "", preview: "" })]);
+    const empty = entry({ body: "", preview: "" });
+    const { user } = await openDiary(`/diary/${empty.id}`, [empty]);
 
     await user.click(await screen.findByRole("button", { name: "Get ideas" }));
     await screen.findByText("週末に何をしましたか？");
@@ -202,7 +235,7 @@ describe("DiaryPage", () => {
   });
 
   it("deletes an entry after a confirmation, leaving its URL and the list", async () => {
-    const { user } = await openDiary("/diary/e1", [EVENING, MORNING]);
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [EVENING, MORNING]);
 
     await user.click(await screen.findByRole("button", { name: "Delete entry" }));
     const confirm = screen.getByRole("group", { name: "Confirm delete" });
@@ -211,8 +244,8 @@ describe("DiaryPage", () => {
     await user.click(within(confirm).getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(window.location.pathname).toBe("/diary"));
-    expect(variablesOf("DeleteDiaryEntry")).toEqual({ id: "e1" });
-    expect(list().getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(["/diary/e2"]);
+    expect(variablesOf("DeleteDiaryEntry")).toEqual({ id: MORNING_ID });
+    expect(list().getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([`/diary/${EVENING_ID}`]);
     expect(screen.getByText("Choose an entry, or start a new one.")).toBeInTheDocument();
   });
 
@@ -232,7 +265,7 @@ describe("DiaryPage", () => {
   });
 
   it("shows a typed failure as a toast and keeps the learner's text", async () => {
-    const { user } = await openDiary("/diary/e1", [MORNING]);
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
     server.onGraphql("ReviewDiaryEntry", () =>
       json({
         data: {
@@ -260,8 +293,47 @@ describe("DiaryPage", () => {
     expect(screen.getByRole("button", { name: "Write" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("drops an autosave that lands after its entry was deleted, without a toast", async () => {
+    const { user, diary } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    const box = await screen.findByLabelText("Diary entry");
+    diary.entries.splice(0);
+
+    await user.type(box, "美味しかった。");
+
+    expect(await screen.findByText("Not saved", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(requestsFor("SaveDiaryEntry")).not.toHaveLength(0);
+    expect(screen.queryByText("This entry doesn't exist any more.")).not.toBeInTheDocument();
+    // Unmount while the fake server is still there, so the save on the way out is refused the
+    // same way instead of failing on a real fetch after the test.
+    cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
+  it("says an entry deleted elsewhere doesn't exist any more when asked for feedback", async () => {
+    const { user, diary } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    await screen.findByLabelText("Diary entry");
+    diary.entries.splice(0); // deleted in another tab
+
+    await user.click(screen.getByRole("button", { name: "Get feedback" }));
+
+    expect(await screen.findByText("This entry doesn't exist any more.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Diary entry")).toHaveValue("朝ご飯を食べました。");
+  });
+
+  it("says the languages can't change once an entry has had feedback elsewhere", async () => {
+    const empty = entry({ body: "", preview: "" });
+    const { user, diary } = await openDiary(`/diary/${empty.id}`, [empty]);
+    await screen.findByRole("combobox", { name: "Writing in" });
+    Object.assign(diary.find(empty.id) ?? {}, { reviewedAt: localIso(2026, 9, 21, 10, 0) }); // reviewed in another tab
+
+    await pick(user, "Writing in", /Spanish/);
+
+    expect(await screen.findByText("The languages can't change once an entry has had feedback.")).toBeInTheDocument();
+    expect(diary.find(empty.id)?.language).toBe("JA");
+  });
+
   it("keeps a follow-up question in its box when the reply fails", async () => {
-    const { user } = await openDiary("/diary/e1", [MORNING]);
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
     const panel = await screen.findByRole("region", { name: "Help me say…" });
     server.onGraphql("StartDiaryHelpThread", () => {
       throw new TypeError("Failed to fetch");
@@ -275,7 +347,7 @@ describe("DiaryPage", () => {
   });
 
   it("moves the focus to the feedback when a ⌘/Ctrl+Enter review takes the textarea away", async () => {
-    const { user } = await openDiary("/diary/e1", [MORNING]);
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
     const status = screen.getByRole("status");
     expect(status).toBeEmptyDOMElement();
 
@@ -288,7 +360,7 @@ describe("DiaryPage", () => {
   });
 
   it("saves a pending draft before signing out, and signs out without a session-ended notice", async () => {
-    const { user, diary } = await openDiary("/diary/e1", [MORNING]);
+    const { user, diary } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
     let signedIn = true;
     server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
     server.onSession("DELETE", () => {
@@ -305,12 +377,12 @@ describe("DiaryPage", () => {
     const signOutAt = server.requests.findIndex((request) => request.method === "DELETE");
     expect(saveAt).toBeGreaterThanOrEqual(0);
     expect(saveAt).toBeLessThan(signOutAt);
-    expect(diary.find("e1")?.body).toBe("朝ご飯を食べました。美味しかった。");
+    expect(diary.find(MORNING_ID)?.body).toBe("朝ご飯を食べました。美味しかった。");
     expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
   });
 
   it("doesn't call a deliberate sign-out an ended session when a request still out comes back refused", async () => {
-    const { user } = await openDiary("/diary/e1", [MORNING]);
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
     let signedIn = true;
     server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
     server.onSession("DELETE", () => {
@@ -340,7 +412,8 @@ describe("DiaryPage", () => {
   });
 
   it("says an entry doesn't exist when its id is missing or another code's", async () => {
-    await openDiary("/diary/someone-elses", [MORNING]);
+    // Well formed, but no entry of this access code's.
+    await openDiary("/diary/0f1e2d3c-4b5a-4968-8776-655443322110", [MORNING]);
 
     expect(await screen.findByText("This entry doesn't exist, or belongs to another access code.")).toBeInTheDocument();
     expect(screen.queryByLabelText("Diary entry")).not.toBeInTheDocument();

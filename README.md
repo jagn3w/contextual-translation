@@ -6,9 +6,9 @@ formality (Spanish *tú*/*usted*, Japanese plain/polite/honorific) and the right
 
 How it works is written up in `docs/`: start with [docs/backend.md](docs/backend.md),
 [docs/frontend.md](docs/frontend.md) and [docs/api_boundary.md](docs/api_boundary.md), then the two
-features, [docs/phrases.md](docs/phrases.md) and [docs/diary.md](docs/diary.md). Code comments that
-cite design decision numbers ("design D2.3") refer to a design document kept outside this
-repository.
+features, [docs/phrases.md](docs/phrases.md) and [docs/diary.md](docs/diary.md), and the prompts in
+[docs/prompts.md](docs/prompts.md). Code comments that cite design decision numbers ("design D2.3")
+refer to a design document kept outside this repository.
 
 ## Layout
 
@@ -21,6 +21,7 @@ repository.
 | `docs/frontend.md` | The SPA: structure, routing, session lifecycle, data layer, styling, accessibility, testing |
 | `docs/api_boundary.md` | The GraphQL schema as the type contract, the error model, limits, transport and auth |
 | `docs/phrases.md` | The Phrases translator end to end |
+| `docs/prompts.md` | Every request the app sends to Claude, and how to change a prompt safely |
 | `docs/diary.md` | The Diary page: product rules and the backend/frontend GraphQL contract |
 | `docs/runbook.md` | Standing up production |
 
@@ -43,8 +44,9 @@ each half on its own.
 
 ## Checks
 
-`bin/check` runs every quality gate — RuboCop, Sorbet, Brakeman, Rails tests (including the
-`schema.graphql` drift check), TypeScript, Vitest and the production build. CI runs the same
+`bin/check` runs every quality gate — RuboCop, Sorbet, Brakeman, a check that the committed
+Sorbet DSL RBIs are current (`tapioca dsl --verify`), Rails tests (including the `schema.graphql`
+drift check), TypeScript, Vitest and the production build. CI runs the same
 script, and it is the `jkb task land` gate. `bin/check backend` or `bin/check frontend` runs one
 half. Without `PGHOST`/`DATABASE_URL` it starts a throwaway Postgres cluster for the run.
 
@@ -72,7 +74,8 @@ bin/rails graphql:dump_schema   # after any GraphQL change; commit schema.graphq
 ### Local API testing (curl)
 
 Create an access code, start the server, then run the smoke script — it signs in with a cookie
-jar, runs the `viewer` query and a `translate` mutation, signs out, and checks the session is gone:
+jar, runs the `viewer` query and a `translate` mutation, creates a diary entry, reads it back and
+deletes it (no tutor call, so it costs nothing), signs out, and checks the session is gone:
 
 ```sh
 cd backend
@@ -85,7 +88,7 @@ ORIGIN=http://localhost:5173 bin/smoke ctx-XXXX-... http://localhost:3000
 `ORIGIN` must be the origin Rails accepts (`APP_HOST`, `localhost:5173` in development). Through
 the Vite dev server (`pnpm dev`), `bin/smoke ctx-XXXX-...` needs no extra settings. Against
 production: `bin/smoke ctx-XXXX-... https://translate.jagnew.io`. `TEXT`, `CONTEXT`, `FROM` and
-`TO` change the sample translation.
+`TO` change the sample translation (and the diary entry's language pair).
 
 By hand, every state-changing request needs the JSON content type and the Origin header:
 
@@ -110,7 +113,8 @@ It prints each translation with Claude's notes, a pass count per category, and p
 effort level (target: p95 under 10 s).
 
 After adding or upgrading gems, regenerate type information with `bin/tapioca gems` (and
-`bin/tapioca dsl` after model or route changes).
+`bin/tapioca dsl` after model, route or GraphQL input type changes; it runs in the test
+environment, so it needs the test database).
 
 ## Frontend
 

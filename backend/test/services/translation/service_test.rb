@@ -70,7 +70,7 @@ class Translation::ServiceTest < ActiveSupport::TestCase
     error = assert_raises(Translation::Error) { @service.call(request("Hi"), session: sessions.last) }
 
     assert_equal Translation::ErrorCode::RATE_LIMITED, error.code
-    assert_includes error.message, "Too many translations"
+    assert_includes error.message, "Too many Claude requests on this access code"
   end
 
   test "an attempt refused by one limit still counts against the others" do
@@ -84,7 +84,7 @@ class Translation::ServiceTest < ActiveSupport::TestCase
 
     error = assert_raises(Translation::Error) { @service.call(request("Hi"), session: third) }
 
-    assert_includes error.message, "Too many translations"
+    assert_includes error.message, "Too many Claude requests on this access code"
   end
 
   test "when a minute and a daily limit are both exceeded, the daily one is reported" do

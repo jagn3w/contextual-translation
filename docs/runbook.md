@@ -109,9 +109,11 @@ Dashboard → **Apps → One-Click Apps/Databases → PostgreSQL**:
 4. **Environment variables** — see section 10.
 5. **Domain and TLS:** HTTP Settings → Connect New Domain `translate.jagnew.io` → Enable HTTPS →
    Force HTTPS. Let's Encrypt issues the certificate once DNS resolves.
-6. **Request timeout:** nginx's default `proxy_read_timeout` is 60 s, which already covers a Claude
-   call (30 s timeout plus one quick retry, design D2.2). Only if you see 504s, add
-   `proxy_read_timeout 90s;` in the app's "Edit Default Nginx Configurations". **(verify)**
+6. **Request timeout:** nginx's default `proxy_read_timeout` is 60 s. A Claude call, including its
+   one retry, must finish within `Claude::MessageCaller::DEADLINE_SECONDS` (55 s), and each
+   attempt's timeout is the smaller of the time left and 30 s, so the default already covers it.
+   Only if you see 504s, add `proxy_read_timeout 90s;` in the app's "Edit Default Nginx
+   Configurations". **(verify)**
 
 ### After the first release: check client IPs
 
@@ -230,7 +232,8 @@ silently override WIF, so the app refuses to boot when one is present with `CLAU
    docker exec "$C" bin/rails access_codes:revoke ID=<id>     # if it ever leaks
    ```
 
-5. **From your laptop:** `bin/smoke <access-code> https://translate.jagnew.io`, then do the
+5. **From your laptop:** `bin/smoke <access-code> https://translate.jagnew.io` (one translation,
+   plus a diary entry created, read back and deleted without a tutor call), then do the
    client-IP check at the end of section 7, then open the site and translate something with context.
 
 6. **Quality and latency baseline** (local, with the dev workspace's key; costs a little):

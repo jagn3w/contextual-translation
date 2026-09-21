@@ -19,6 +19,8 @@ module Diary
 
     # A thread as the tutor sees it: enough to know what it said and whether the learner has
     # dealt with it. `round` is the review that opened a SENTENCE or ENTRY thread (nil for HELP).
+    # `current` is false for a SENTENCE thread a later review replaced (about an older version of
+    # the entry); it is only sent when the learner replied in it.
     class ContextThread < T::Struct
       const :kind, ThreadKind
       const :verdict, T.nilable(Verdict)
@@ -26,6 +28,7 @@ module Diary
       const :title, T.nilable(String)
       const :round, T.nilable(Integer)
       const :resolved, T::Boolean
+      const :current, T::Boolean, default: true
       const :comments, T::Array[Comment]
     end
 

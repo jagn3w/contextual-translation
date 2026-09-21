@@ -21,10 +21,22 @@ module Diary
     # reply still has to arrive inside the 30 s SDK timeout, and keeping it inside that is
     # Service::MAX_REVIEW_LENGTH's job, not this number's.
     REVIEW_MAX_TOKENS = 32_000
-    # Replies, hints and topics are a paragraph or two. The longest is a level-4 hint, which writes
-    # out the full sentence for a question of up to Service::MAX_COMMENT_LENGTH (2,000) characters:
+    # The output budget for a reply in a thread. Usually a paragraph, but the student may ask for
+    # the correct version, and REPLY_SYSTEM then has Claude write out the thread's sentence (never
+    # the whole entry, whose 10,000 characters a HELP thread's <entry> can hold). The worst case,
+    # again counting a Japanese character as ~1 token, is a sentence thread whose sentence is a
+    # whole reviewed body of Service::MAX_REVIEW_LENGTH (2,000) characters, or a HELP question of
+    # Service::MAX_COMMENT_LENGTH (2,000), answering a new comment of MAX_COMMENT_LENGTH that itself
+    # needs correcting:
+    #   ~2,000 (the corrected sentence) + ~2,000 (their comment's text, corrected) + ~500
+    #   (explanation) ≈ 4,500 tokens
+    # 8,000 leaves almost twice that for JSON escaping and costly kanji. Like the others it is an
+    # estimate, not a measurement: the "diary reply" usage lines show the real output_tokens.
+    REPLY_MAX_TOKENS = 8_000
+    # Hints and topics are a paragraph or two. The longest is a level-4 hint, which writes out the
+    # full sentence for a question of up to Service::MAX_COMMENT_LENGTH (2,000) characters:
     #   ~2,000 (the sentence, if the question was that long) + ~300 (its explanation) ≈ 2,300 tokens
-    # Three topics with glosses are ~200 tokens, a reply a few hundred.
+    # Three topics with glosses are ~200 tokens.
     SHORT_MAX_TOKENS = 4_000
 
     sig do
@@ -63,7 +75,10 @@ module Diary
 
     sig { override.params(request: ReplyRequest).returns(String) }
     def reply(request)
-      text_field("diary reply", Prompt::REPLY_SYSTEM, Prompt.reply_message(request), Prompt::REPLY_SCHEMA, "reply")
+      value = ask("diary reply", Prompt::REPLY_SYSTEM, Prompt.reply_message(request), Prompt::REPLY_SCHEMA,
+        max_tokens: REPLY_MAX_TOKENS)["reply"]
+      unreadable!("no reply") unless value.is_a?(String) && value.present?
+      value.strip
     end
 
     sig { override.params(request: HintRequest).returns(Hint) }
@@ -91,16 +106,6 @@ module Diary
     end
 
     private
-
-    sig do
-      params(label: String, system: String, message: String, schema: T::Hash[Symbol, T.untyped], field: String)
-        .returns(String)
-    end
-    def text_field(label, system, message, schema, field)
-      value = ask(label, system, message, schema, max_tokens: SHORT_MAX_TOKENS)[field]
-      unreadable!("no #{field}") unless value.is_a?(String) && value.present?
-      value.strip
-    end
 
     # One structured-output call; returns the parsed JSON object.
     sig do

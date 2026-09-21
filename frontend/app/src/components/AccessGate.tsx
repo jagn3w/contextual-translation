@@ -85,7 +85,7 @@ export function AccessGate({ notice, onSignedIn }: Props) {
         <button
           type="submit"
           disabled={submitting || code.trim() === ""}
-          className="mt-6 w-full rounded-md bg-ink px-3 py-2 text-sm font-medium text-canvas transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="focus-ring mt-6 w-full rounded-md bg-ink px-3 py-2 text-sm font-medium text-canvas transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {submitting ? "Checking…" : "Continue"}
         </button>

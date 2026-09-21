@@ -11,7 +11,7 @@ import { useAnnounce } from "./announce.ts";
  * What the page can do to a thread. Each returns the mutation's promise, so the component that
  * called it can show its own pending state; `onReply` resolves true once the reply is saved, which
  * is what clears the box (a failure keeps the learner's question in it to try again). Failures are
- * the caller's to report — it has the error, and the toast wording (translateErrorMessage,
+ * the caller's to report — it has the error, and the toast wording (diaryErrorMessage,
  * failureMessage) lives with it.
  */
 export type ThreadActions = {

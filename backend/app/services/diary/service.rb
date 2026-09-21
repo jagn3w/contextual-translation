@@ -266,7 +266,7 @@ module Diary
       comments << extra if extra
       Tutor::ContextThread.new(
         kind: thread.kind_enum, verdict: thread.verdict_enum, sentence: thread.sentence, title: thread.title,
-        round: thread.review_round, resolved: thread.resolved?, comments:
+        round: thread.review_round, resolved: thread.resolved?, current: thread.current, comments:
       )
     end
 

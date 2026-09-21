@@ -5,6 +5,12 @@ import { comment, entry, localIso, sentenceThread, thread } from "../../test/dia
 import { type DiaryActions, DiaryView } from "./DiaryView.tsx";
 
 const NOW = new Date(2026, 8, 21, 20, 0);
+// Ids the tests assert on; the rest are random (diaryFixtures.ts).
+const ENTRY_ID = "5f0c2b8e-3a1d-4e6f-9b7a-2c4d6e8f0a13";
+const OTHER_ENTRY_ID = "a3d91f47-8c2e-4b5a-9e61-7f0b3c5d2e84";
+const LATE_ENTRY_ID = "c7e24a90-1b3f-4d8c-a5e2-9f6b0d3c1a57";
+const WRONG_THREAD_ID = "e1b8d3f6-4a7c-4f2e-8d09-3b5c7a9e1f26";
+const HELP_THREAD_ID = "9d4f6b21-7e3a-4c8d-b1f5-0a2e4c6d8b39";
 const BODY = "昨日、友達と山を行きました。とても楽しかったです。";
 
 function actions(overrides: Partial<DiaryActions> = {}): DiaryActions {
@@ -24,17 +30,17 @@ function actions(overrides: Partial<DiaryActions> = {}): DiaryActions {
 
 function reviewed(overrides: Partial<DiaryEntry> = {}): DiaryEntry {
   return entry({
-    id: "e1",
+    id: ENTRY_ID,
     body: BODY,
     preview: BODY,
     reviewedBody: BODY,
     reviewedAt: localIso(2026, 9, 21, 19, 0),
     createdAt: localIso(2026, 9, 21, 18, 30),
     threads: [
-      sentenceThread("wrong", BODY, "昨日、友達と山を行きました。", "WRONG", {
+      sentenceThread(WRONG_THREAD_ID, BODY, "昨日、友達と山を行きました。", "WRONG", {
         comments: [comment("TUTOR", "Look at the particle before 行きました: going *to* a place.")],
       }),
-      sentenceThread("right", BODY, "とても楽しかったです。", "CORRECT", {
+      sentenceThread(crypto.randomUUID(), BODY, "とても楽しかったです。", "CORRECT", {
         comments: [comment("TUTOR", "Natural and well formed.")],
       }),
     ],
@@ -42,7 +48,7 @@ function reviewed(overrides: Partial<DiaryEntry> = {}): DiaryEntry {
   });
 }
 
-function renderView(selected: DiaryEntry | null, handlers = actions(), entries = [selected ?? entry({ id: "x" })]) {
+function renderView(selected: DiaryEntry | null, handlers = actions(), entries = [selected ?? entry()]) {
   const user = userEvent.setup();
   render(
     <DiaryView
@@ -60,9 +66,9 @@ function renderView(selected: DiaryEntry | null, handlers = actions(), entries =
 describe("DiaryView", () => {
   it("groups the scrollback by day, with the time and language telling same-day entries apart", () => {
     const entries = [
-      entry({ id: "late", preview: "夜ご飯はカレーでした", createdAt: localIso(2026, 9, 21, 21, 15) }),
-      entry({ id: "early", language: "ES", preview: "", createdAt: localIso(2026, 9, 21, 7, 5) }),
-      entry({ id: "old", preview: "雨でした", createdAt: localIso(2026, 9, 19, 12, 0) }),
+      entry({ id: LATE_ENTRY_ID, preview: "夜ご飯はカレーでした", createdAt: localIso(2026, 9, 21, 21, 15) }),
+      entry({ language: "ES", preview: "", createdAt: localIso(2026, 9, 21, 7, 5) }),
+      entry({ preview: "雨でした", createdAt: localIso(2026, 9, 19, 12, 0) }),
     ];
     renderView(null, actions(), entries);
 
@@ -70,7 +76,7 @@ describe("DiaryView", () => {
     const today = within(list).getByRole("region", { name: "Today" });
     const links = within(today).getAllByRole("link");
     expect(links).toHaveLength(2);
-    expect(links[0]).toHaveAttribute("href", "/diary/late");
+    expect(links[0]).toHaveAttribute("href", `/diary/${LATE_ENTRY_ID}`);
     expect(links[0]).toHaveTextContent("夜ご飯はカレーでした");
     expect(links[0]).toHaveTextContent("Japanese");
     expect(links[1]).toHaveTextContent("Spanish");
@@ -83,7 +89,7 @@ describe("DiaryView", () => {
 
   it("marks the open entry and starts a new one from New entry", async () => {
     const selected = reviewed();
-    const { user, handlers } = renderView(selected, actions(), [selected, entry({ id: "e0", preview: "前" })]);
+    const { user, handlers } = renderView(selected, actions(), [selected, entry({ preview: "前" })]);
 
     expect(screen.getByRole("link", { name: /とても楽しかった/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: /前/ })).not.toHaveAttribute("aria-current");
@@ -123,7 +129,7 @@ describe("DiaryView", () => {
     expect(within(card).getByText(/Look at the particle/)).toBeInTheDocument();
     expect(within(card).getByText("Claude")).toBeInTheDocument();
     await user.click(within(card).getByRole("button", { name: "Resolve" }));
-    expect(handlers.onResolve).toHaveBeenCalledWith("wrong", true);
+    expect(handlers.onResolve).toHaveBeenCalledWith(WRONG_THREAD_ID, true);
   });
 
   it("sends a question from the card and clears the box once it's in", async () => {
@@ -137,7 +143,7 @@ describe("DiaryView", () => {
     await user.type(box, "Is it に?");
     await user.click(within(card).getByRole("button", { name: "Send" }));
 
-    expect(onReply).toHaveBeenCalledWith("wrong", "Is it に?");
+    expect(onReply).toHaveBeenCalledWith(WRONG_THREAD_ID, "Is it に?");
     expect(screen.getByRole("status")).toHaveTextContent("Asking Claude…");
     expect(box).toHaveValue("Is it に?");
     // Resolving under a reply still on its way would race it; it waits, as Send does.
@@ -151,7 +157,7 @@ describe("DiaryView", () => {
   it("keeps Resolve disabled while a hint is on its way", async () => {
     let finish: () => void = () => undefined;
     const onRequestHint = vi.fn(() => new Promise<boolean>((resolve) => (finish = () => resolve(true))));
-    const help = thread({ id: "h1", kind: "HELP", sentence: "How do I say it rained?", hintLevel: 0 });
+    const help = thread({ id: HELP_THREAD_ID, kind: "HELP", sentence: "How do I say it rained?", hintLevel: 0 });
     const { user } = renderView(reviewed({ threads: [help] }), actions({ onRequestHint }));
 
     const panel = screen.getByRole("region", { name: "Help me say…" });
@@ -181,7 +187,7 @@ describe("DiaryView", () => {
     expect(resolved).toHaveClass("decoration-dotted");
     await user.click(resolved);
     await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Reopen" }));
-    expect(handlers.onResolve).toHaveBeenCalledWith("wrong", false);
+    expect(handlers.onResolve).toHaveBeenCalledWith(WRONG_THREAD_ID, false);
   });
 
   it("says when the text has changed since the feedback", async () => {
@@ -196,7 +202,7 @@ describe("DiaryView", () => {
 
   it("writes in Write mode with a count, saves as it goes and asks for feedback with ⌘/Ctrl+Enter", async () => {
     const handlers = actions();
-    const { user } = renderView(entry({ id: "new", createdAt: localIso(2026, 9, 21, 20, 0) }), handlers);
+    const { user } = renderView(entry({ id: ENTRY_ID, createdAt: localIso(2026, 9, 21, 20, 0) }), handlers);
 
     expect(screen.getByRole("button", { name: "Feedback" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Get feedback" })).toBeDisabled();
@@ -206,15 +212,15 @@ describe("DiaryView", () => {
 
     expect(screen.getByText("8 / 10,000")).toBeInTheDocument();
     expect(screen.getByText("Saving…")).toBeInTheDocument();
-    await waitFor(() => expect(handlers.onSaveBody).toHaveBeenCalledWith("new", "山に行きました。"));
+    await waitFor(() => expect(handlers.onSaveBody).toHaveBeenCalledWith(ENTRY_ID, "山に行きました。"));
     expect(await screen.findByText("Saved")).toBeInTheDocument();
 
     await user.keyboard("{Control>}{Enter}{/Control}");
-    expect(handlers.onRequestFeedback).toHaveBeenCalledWith("new", "山に行きました。");
+    expect(handlers.onRequestFeedback).toHaveBeenCalledWith(ENTRY_ID, "山に行きました。");
   });
 
   it("offers Get feedback only up to the feedback limit, and says why", () => {
-    renderView(entry({ id: "long", body: "あ".repeat(2_001) }));
+    renderView(entry({ body: "あ".repeat(2_001) }));
 
     expect(screen.getByRole("button", { name: "Get feedback" })).toBeDisabled();
     expect(screen.getByText(/Feedback works on up to 2,000 characters at a time/)).toHaveTextContent("2,001 / 10,000");
@@ -224,7 +230,7 @@ describe("DiaryView", () => {
   });
 
   it("says when an entry is too long to save at all", () => {
-    renderView(entry({ id: "huge", body: "あ".repeat(10_001) }));
+    renderView(entry({ body: "あ".repeat(10_001) }));
     expect(screen.getByText(/Too long to save/)).toHaveTextContent("10,001 / 10,000");
   });
 
@@ -233,25 +239,25 @@ describe("DiaryView", () => {
     const handlers = actions({
       onRequestFeedback: vi.fn(() => new Promise<boolean>((resolve) => (finishReview = resolve))),
     });
-    const { user } = renderView(entry({ id: "e1", body: "山に行きました。" }), handlers);
+    const { user } = renderView(entry({ id: ENTRY_ID, body: "山に行きました。" }), handlers);
 
     await user.click(screen.getByRole("button", { name: "Get feedback" }));
     await user.type(screen.getByLabelText("Diary entry"), "雨でした。");
-    await waitFor(() => expect(handlers.onSaveBody).toHaveBeenCalledWith("e1", "山に行きました。雨でした。"));
+    await waitFor(() => expect(handlers.onSaveBody).toHaveBeenCalledWith(ENTRY_ID, "山に行きました。雨でした。"));
     expect(handlers.onSaveBody).toHaveBeenCalledTimes(1);
 
     // The review lands after that save, writing the text it was sent over the newer draft.
     finishReview(true);
     await waitFor(() => expect(handlers.onSaveBody).toHaveBeenCalledTimes(2));
-    expect(handlers.onSaveBody).toHaveBeenLastCalledWith("e1", "山に行きました。雨でした。");
+    expect(handlers.onSaveBody).toHaveBeenLastCalledWith(ENTRY_ID, "山に行きました。雨でした。");
   });
 
   it("comes back to a draft whose save hasn't landed instead of the older cached body", async () => {
     const saves: Array<(ok: boolean) => void> = [];
     const onSaveBody = vi.fn(() => new Promise<boolean>((resolve) => saves.push(resolve)));
     const handlers = actions({ onSaveBody });
-    const first = entry({ id: "e1", body: "朝" });
-    const other = entry({ id: "e2", body: "夜" });
+    const first = entry({ id: ENTRY_ID, body: "朝" });
+    const other = entry({ id: OTHER_ENTRY_ID, body: "夜" });
     const user = userEvent.setup();
     const view = (selected: DiaryEntry) => (
       <DiaryView entries={[first, other]} selectedId={selected.id} entry={selected} entryLoading={false} actions={handlers} now={NOW} />
@@ -261,7 +267,7 @@ describe("DiaryView", () => {
     await user.type(screen.getByLabelText("Diary entry"), "ご飯");
     rerender(view(other));
     // Leaving saved the draft on the way out; the cache still has the old body.
-    expect(onSaveBody).toHaveBeenCalledWith("e1", "朝ご飯");
+    expect(onSaveBody).toHaveBeenCalledWith(ENTRY_ID, "朝ご飯");
     rerender(view(first));
 
     expect(screen.getByLabelText("Diary entry")).toHaveValue("朝ご飯");
@@ -270,19 +276,19 @@ describe("DiaryView", () => {
     await waitFor(() => expect(onSaveBody).toHaveBeenCalledTimes(2));
     saves.forEach((resolve) => resolve(true));
     expect(await screen.findByText("Saved")).toBeInTheDocument();
-    expect(onSaveBody).toHaveBeenLastCalledWith("e1", "朝ご飯");
+    expect(onSaveBody).toHaveBeenLastCalledWith(ENTRY_ID, "朝ご飯");
   });
 
   it("offers the language pickers only while the entry is empty", () => {
     const onChangeLanguages = vi.fn(async () => undefined);
-    renderView(entry({ id: "empty" }), actions({ onChangeLanguages }));
+    renderView(entry(), actions({ onChangeLanguages }));
     expect(screen.getByRole("combobox", { name: "Writing in" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Notes in" })).toBeInTheDocument();
   });
 
   it("locks the languages once the entry has a thread, even with nothing written", () => {
-    const help = thread({ id: "h1", kind: "HELP", sentence: "How do I say it rained?" });
-    renderView(entry({ id: "asked", threads: [help] }), actions({ onChangeLanguages: vi.fn(async () => undefined) }));
+    const help = thread({ id: HELP_THREAD_ID, kind: "HELP", sentence: "How do I say it rained?" });
+    renderView(entry({ threads: [help] }), actions({ onChangeLanguages: vi.fn(async () => undefined) }));
     expect(screen.queryByRole("combobox", { name: "Writing in" })).not.toBeInTheDocument();
     expect(screen.getByText("Writing in Japanese · notes in English")).toBeInTheDocument();
   });
@@ -295,7 +301,7 @@ describe("DiaryView", () => {
 
   it("asks for another hint on a help thread and sends a follow-up", async () => {
     const help = thread({
-      id: "h1",
+      id: HELP_THREAD_ID,
       kind: "HELP",
       sentence: "How do I say I went hiking with my sister?",
       hintLevel: 1,
@@ -306,11 +312,11 @@ describe("DiaryView", () => {
     const panel = screen.getByRole("region", { name: "Help me say…" });
     expect(within(panel).getByText("How do I say I went hiking with my sister?")).toBeInTheDocument();
     await user.click(within(panel).getByRole("button", { name: "Another hint" }));
-    expect(handlers.onRequestHint).toHaveBeenCalledWith("h1");
+    expect(handlers.onRequestHint).toHaveBeenCalledWith(HELP_THREAD_ID);
 
     await user.type(within(panel).getByLabelText("Ask something specific"), "What is 'sister'?");
     await user.click(within(panel).getByRole("button", { name: "Send" }));
-    expect(handlers.onReply).toHaveBeenCalledWith("h1", "What is 'sister'?");
+    expect(handlers.onReply).toHaveBeenCalledWith(HELP_THREAD_ID, "What is 'sister'?");
   });
 
   it("starts a help thread from Help me say…", async () => {
@@ -320,7 +326,7 @@ describe("DiaryView", () => {
     await user.type(within(panel).getByLabelText(/What do you want to say\?/), "How do I say it rained?");
     await user.click(within(panel).getByRole("button", { name: "Ask" }));
 
-    expect(handlers.onStartHelp).toHaveBeenCalledWith("e1", "How do I say it rained?");
+    expect(handlers.onStartHelp).toHaveBeenCalledWith(ENTRY_ID, "How do I say it rained?");
   });
 
   it("lists writing ideas with their glosses", async () => {
@@ -333,7 +339,7 @@ describe("DiaryView", () => {
 
     await user.click(screen.getByRole("button", { name: "Get ideas" }));
 
-    expect(onSuggestTopics).toHaveBeenCalledWith("e1", reviewed().body);
+    expect(onSuggestTopics).toHaveBeenCalledWith(ENTRY_ID, reviewed().body);
     expect(await screen.findByText("週末に何をしましたか？")).toHaveAttribute("lang", "ja");
     expect(screen.getByText("What did you do at the weekend?")).toHaveAttribute("lang", "en");
   });
@@ -342,9 +348,9 @@ describe("DiaryView", () => {
     const selected = reviewed({
       threads: [
         ...reviewed().threads,
-        thread({ id: "n1", kind: "ENTRY", title: "Particles of motion", comments: [comment("TUTOR", "に vs を")] }),
-        thread({ id: "n2", kind: "ENTRY", title: "Nice use of とても", resolved: true }),
-        thread({ id: "old", kind: "SENTENCE", verdict: "IMPROVABLE", sentence: "山を行った。", current: false }),
+        thread({ kind: "ENTRY", title: "Particles of motion", comments: [comment("TUTOR", "に vs を")] }),
+        thread({ kind: "ENTRY", title: "Nice use of とても", resolved: true }),
+        thread({ kind: "SENTENCE", verdict: "IMPROVABLE", sentence: "山を行った。", current: false }),
       ],
     });
     const { user } = renderView(selected);
@@ -362,7 +368,7 @@ describe("DiaryView", () => {
 
   it("lists a sentence the backend couldn't locate under the text instead of losing it", () => {
     const selected = reviewed({
-      threads: [thread({ id: "lost", verdict: "WRONG", sentence: "山を行きました", comments: [comment("TUTOR", "Particle.")] })],
+      threads: [thread({ verdict: "WRONG", sentence: "山を行きました", comments: [comment("TUTOR", "Particle.")] })],
     });
     renderView(selected);
 

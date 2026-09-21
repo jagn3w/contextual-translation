@@ -149,8 +149,9 @@ always sends the level explicitly (default `NOTABLE`).
 - **Limits**: the counter under the source box reads `n / 10,000` and turns red with "Too long to
   translate — " past the limit. An over-long context shows its own message. Update Translation is
   disabled for blank text, the same language on both sides, either limit exceeded, or a request in
-  flight. The frontend limits are `MAX_SOURCE_LENGTH` / `MAX_CONTEXT_LENGTH` exported from
-  `TranslatePage.tsx`, and the backend's are `Translation::Service`'s.
+  flight. The frontend limits are `MAX_SOURCE_LENGTH` / `MAX_CONTEXT_LENGTH` in
+  `frontend/app/src/lib/translateLimits.ts` (the `INPUT_TOO_LONG` message is built from them too),
+  and the backend's are `Translation::Service`'s.
 - **Accessibility**: an always-mounted `role="status"` region announces "Translating…",
   "Translation ready." or "Translation failed."; the result pane is `aria-busy` while loading.
 

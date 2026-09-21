@@ -149,7 +149,7 @@ module Claude
 
     sig { params(label: String, message: Anthropic::Models::Beta::BetaMessage, started: Float).void }
     def log_usage(label, message, started)
-      elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
+      elapsed_ms = ((@clock.call - started) * 1000).round
       usage = message.usage
       @logger.info(
         "Claude #{label} model=#{message.model} stop=#{message.stop_reason} ms=#{elapsed_ms} " \

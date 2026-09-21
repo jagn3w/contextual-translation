@@ -12,8 +12,9 @@ import { SECONDARY_BUTTON, type ThreadActions } from "./ThreadConversation.tsx";
 /**
  * Everything the diary can ask of the server. Each returns the mutation's promise so the control
  * that asked can show its own pending state; failures are reported by the caller (a toast worded
- * by translateErrorMessage or failureMessage) and signalled here by `false` / `null`, which leaves
- * the learner's input in place to try again.
+ * by DiaryPage's diaryErrorMessage for a typed error, or failureMessage and DiaryPage's own
+ * not-found and invalid sentences for an outright failure) and signalled here by `false` / `null`,
+ * which leaves the learner's input in place to try again.
  */
 export type DiaryActions = ThreadActions & {
   /** Creates an entry and navigates to it. */

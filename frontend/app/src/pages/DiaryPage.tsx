@@ -1,4 +1,3 @@
-import { CombinedGraphQLErrors } from "@apollo/client";
 import { skipToken, useApolloClient, useQuery } from "@apollo/client/react";
 import { useMemo } from "react";
 import { toast } from "sonner";
@@ -20,7 +19,7 @@ import {
 } from "../gql/graphql.ts";
 import { MAX_BODY_LENGTH, MAX_COMMENT_LENGTH, MAX_REVIEW_LENGTH } from "../lib/diary.ts";
 import { failureMessage } from "../lib/failureMessage.ts";
-import { describeRequestError } from "../lib/requestFailure.ts";
+import { describeRequestError, type RequestFailure } from "../lib/requestFailure.ts";
 import { navigate, routePath } from "../lib/router.ts";
 import { translateErrorMessage } from "../lib/translateErrorMessage.ts";
 
@@ -32,34 +31,27 @@ type Props = {
 /** The pair a first entry gets: English notes on Japanese writing, the Phrases showcase pair. */
 const FIRST_PAIR: { language: Language; notesLanguage: Language } = { language: "JA", notesLanguage: "EN" };
 
-/** The top-level GraphQL error codes the diary mutations raise on purpose (docs/diary.md). */
-function graphQLCode(caught: unknown): string | null {
-  if (!CombinedGraphQLErrors.is(caught)) return null;
-  const code = caught.errors.map((error) => error.extensions?.["code"]).find((value) => typeof value === "string");
-  return typeof code === "string" ? code : null;
-}
-
 type Toast = { id?: string };
 
 /**
  * The toast for a request that failed outright. The wording is the app's own (failureMessage),
- * except for the two refusals only the diary can meet, which failureMessage would call "something
- * unexpected" when they are nothing of the kind.
+ * except for the two refusals the diary mutations raise on purpose (docs/diary.md), which get
+ * sentences about the diary rather than the generic ones.
  */
-function reportFailure(caught: unknown, options: Toast = {}) {
-  const code = graphQLCode(caught);
-  if (code === "NOT_FOUND") {
-    toast.error("This entry doesn't exist any more.", options);
-    return;
+function reportFailure(failure: RequestFailure, options: Toast = {}) {
+  switch (failure.kind) {
+    case "unauthenticated":
+      // An ended session is handled by the app, which returns to the access-code screen.
+      return;
+    case "notFound":
+      toast.error("This entry doesn't exist any more.", options);
+      return;
+    case "invalid":
+      toast.error("The languages can't change once an entry has had feedback.", options);
+      return;
+    default:
+      toast.error(failureMessage(failure), options);
   }
-  if (code === "INVALID") {
-    toast.error("The languages can't change once an entry has had feedback.", options);
-    return;
-  }
-  const failure = describeRequestError(caught);
-  // An ended session is handled by the app, which returns to the access-code screen.
-  if (failure.kind === "unauthenticated") return;
-  toast.error(failureMessage(failure), options);
 }
 
 /**
@@ -121,7 +113,7 @@ export function DiaryPage({ entryId }: Props) {
       try {
         return await run();
       } catch (caught) {
-        reportFailure(caught);
+        reportFailure(describeRequestError(caught));
         return undefined;
       }
     }
@@ -176,7 +168,8 @@ export function DiaryPage({ entryId }: Props) {
         } catch (caught) {
           // A save landing after its entry was deleted has nothing left to tell anyone. Otherwise
           // one toast id for every save, so a flaky connection shows one message, not a stack.
-          if (graphQLCode(caught) !== "NOT_FOUND") reportFailure(caught, { id: "diary-save" });
+          const failure = describeRequestError(caught);
+          if (failure.kind !== "notFound") reportFailure(failure, { id: "diary-save" });
           return false;
         }
       },

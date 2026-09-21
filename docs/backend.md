@@ -76,7 +76,13 @@ A request to `/graphql` or `/api/session` passes through, in order:
    - `RequestSizeLimit` (`app/controllers/concerns/request_size_limit.rb`): a `Content-Length`
      over 64 KB gets `413 {"error":"payload_too_large"}` before the body is parsed (Rails parses
      params lazily). 64 KB fits the largest valid translate request (10,000 characters of text plus
-     2,000 of context, even at 3 bytes per character).
+     2,000 of context, even at 3 bytes per character). A request with a `Transfer-Encoding` header
+     (a chunked body, sent without `Content-Length`) gets `411 {"error":"length_required"}`:
+     Rails' `request.content_length` would read the whole chunked body into memory to measure it.
+     Nothing legitimate is refused, since browsers' `fetch` sends `Content-Length` for the string
+     bodies the SPA sends, as do curl and `bin/smoke`, and a bodiless `DELETE` carries neither
+     header. Puma itself buffers a chunked body and hands Rails a `Content-Length` request, so in
+     production this is a second line of defence.
    - `RequestOriginCheck`: the CSRF defence, below.
    - `Authentication` itself adds no before-action; it provides `current_session`.
 4. **The controller.** `GraphqlController` has `before_action :require_session`, which answers
@@ -221,7 +227,11 @@ counter is incremented before any is checked, so an attempt refused by the code 
 against its session, and the error reports the **longest** wait among the exceeded limits, so a
 daily cap is not disguised as a per-minute one. Going over raises `Translation::Error` with code
 `RATE_LIMITED` and `retry_after_seconds`, which reaches the client as a typed payload error (this
-is why the limits live here and not in rack-attack, which can only answer with a bare 429).
+is why the limits live here and not in rack-attack, which can only answer with a bare 429). The
+messages name neither feature ("You're sending requests to Claude quickly.", "This device has
+reached today's limit of Claude requests.", and the access-code equivalents), since either page
+can meet them. The cache keys still start with `translate:` from before the diary shared the
+limits; renaming them would reset every live counter on deploy.
 
 If the cache is unavailable (Solid Cache's failsafe returns `nil`), the limiter **fails open**:
 the count reads as 0. The Anthropic workspace's monthly spend limit is the hard backstop.
@@ -362,7 +372,8 @@ request with the timeout it is given; `MessageCaller` owns everything around it:
   limit, the tier spend cap and billing errors → `BUDGET_EXCEEDED`; 401/403/404, missing AWS
   credentials and rejected tokens → `SERVICE_MISCONFIGURED`. Anything unrecognized is re-raised
   unchanged and ends up as `INTERNAL`.
-- **Logging.** Success logs label, model, stop reason, duration and token counts. A mapped failure
+- **Logging.** Success logs label, model, stop reason, duration and token counts. The duration is
+  measured with the same injectable clock as the deadline, so tests can pin it. A mapped failure
   logs the code, exception class, request id and a truncated SDK message, at `error` for
   `SERVICE_MISCONFIGURED` and `BUDGET_EXCEEDED` (an operator must act) and `warn` otherwise.
 
@@ -452,7 +463,10 @@ drift test fails otherwise.
   saying why.
 - **Tapioca.** RBIs for gems (`sorbet/rbi/gems/`) and for Rails DSLs such as model attributes and
   GraphQL input types (`sorbet/rbi/dsl/`) are generated and committed. Run `bin/tapioca gems` after
-  changing gems and `bin/tapioca dsl` after changing models, routes or GraphQL input types.
+  changing gems and `bin/tapioca dsl` after changing models, routes or GraphQL input types;
+  `bin/check` fails if the DSL RBIs are stale. `sorbet/tapioca/config.yml` runs `dsl` in the test
+  environment (development adds `rails/info` routes that nowhere else has), so it needs the test
+  database (`RAILS_ENV=test bin/rails db:prepare`).
 - **RuboCop** with `rubocop-rails-omakase` (`backend/.rubocop.yml`), no local overrides.
 - **Brakeman** runs with `--exit-on-warn`; any warning fails the check. **bundler-audit** runs in
   CI only (it needs the advisory database).
@@ -494,14 +508,17 @@ From the repo root, `bin/dev` runs Postgres (data in `~/.cache/pg-dev`, TCP only
 and Vite on :5173; open `http://localhost:5173`. On first run it copies `backend/.env.example` to
 `backend/.env` (fake translator, no key). Create an access code with
 `cd backend && bin/rails access_codes:create LABEL=Local`. The README covers running the backend on
-its own and `bin/smoke`, the curl-based end-to-end check (sign in, `viewer`, `translate`, sign out).
+its own and `bin/smoke`, the curl-based end-to-end check (sign in, `viewer`, `translate`, create,
+read and delete a diary entry, sign out).
 
 To use real Claude locally, set `TRANSLATOR=claude`, `CLAUDE_AUTH=api_key` and a dev-workspace
 `ANTHROPIC_API_KEY` in `backend/.env`. `bin/rails claude:auth_check` checks the configured auth and
 performs one translation.
 
-**Checks.** `bin/check backend` runs RuboCop, Sorbet (`srb tc`), Brakeman and the tests (drift test
-included); CI runs the same script. Without `PGHOST` or `DATABASE_URL` it starts a throwaway
+**Checks.** `bin/check backend` runs RuboCop, Sorbet (`srb tc`), Brakeman, `tapioca dsl --verify`
+(the committed DSL RBIs under `sorbet/rbi/dsl/` match what Tapioca would generate now; it loads
+the app, so it runs after `db:prepare`) and the tests (drift test included); CI runs the same
+script. Without `PGHOST` or `DATABASE_URL` it starts a throwaway
 Postgres cluster on a free port and removes it afterwards. That cluster takes its encoding from the
 locale: with an unset or `C` locale, `initdb` creates it as `SQL_ASCII`, and creating the UTF-8 test
 database fails. Run it under a UTF-8 locale, for example `LANG=C.UTF-8 bin/check backend`.

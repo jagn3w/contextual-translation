@@ -6,6 +6,10 @@ gem:
   # doc: true
   # workers: 5
 dsl:
+  # The test environment, so `bin/tapioca dsl` and bin/check's `tapioca dsl --verify` generate the
+  # same RBIs: development adds routes (rails/info) that production and tests don't have, and
+  # bin/check's throwaway Postgres only has the test database.
+  environment: test
   # Add your `dsl` command parameters here:
   #
   # exclude:

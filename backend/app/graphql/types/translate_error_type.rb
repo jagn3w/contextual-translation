@@ -4,7 +4,7 @@
 module Types
   class TranslateErrorType < Types::BaseObject
     graphql_name "TranslateError"
-    description "An anticipated translation failure (design D3.3)."
+    description "An anticipated failure of a translation or a diary tutor call."
 
     field :code, Types::TranslateErrorCodeType, null: false
     field :message, String, null: false, description: "Safe, user-facing English text."

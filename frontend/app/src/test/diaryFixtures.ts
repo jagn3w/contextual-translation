@@ -5,15 +5,19 @@ export function localIso(year: number, month: number, day: number, hour = 9, min
   return new Date(year, month - 1, day, hour, minute).toISOString();
 }
 
-let sequence = 0;
+/*
+ * Ids are UUIDs, as the real server's are (random public ids, never a sequence): a random one
+ * when the test never names the object, and a fixed literal, as a named constant in the test, when
+ * it asserts on it (a URL, a handler's arguments).
+ */
 
 export function comment(author: DiaryComment["author"], body: string): DiaryComment {
-  sequence += 1;
-  return { id: `c${sequence}`, author, body, createdAt: localIso(2026, 9, 21) };
+  return { id: crypto.randomUUID(), author, body, createdAt: localIso(2026, 9, 21) };
 }
 
-export function thread(overrides: Partial<DiaryThread> & Pick<DiaryThread, "id">): DiaryThread {
+export function thread(overrides: Partial<DiaryThread> = {}): DiaryThread {
   return {
+    id: crypto.randomUUID(),
     kind: "SENTENCE",
     verdict: null,
     sentence: null,
@@ -50,8 +54,9 @@ export function sentenceThread(
   });
 }
 
-export function entry(overrides: Partial<DiaryEntry> & Pick<DiaryEntry, "id">): DiaryEntry {
+export function entry(overrides: Partial<DiaryEntry> = {}): DiaryEntry {
   return {
+    id: crypto.randomUUID(),
     language: "JA",
     notesLanguage: "EN",
     body: "",

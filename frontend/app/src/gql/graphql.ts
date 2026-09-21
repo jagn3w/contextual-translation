@@ -38,7 +38,7 @@ export type DiaryVerdict =
   /** Has a mistake of grammar, vocabulary, spelling or meaning. */
   | 'WRONG';
 
-/** How much of a translation to gloss with per-word definitions (design D2.3). */
+/** How much of a translation to gloss with per-word definitions. */
 export type GlossLevel =
   /** Every content word and set phrase, skipping function words. */
   | 'EVERY'
@@ -92,21 +92,21 @@ export type SuggestDiaryTopicsInput = {
   notesLanguage: Language;
 };
 
-/** Why a translation failed. Each code has its own user-facing message (design D3.3). */
+/** Why an operation failed, for translations and diary tutor calls alike. Each code has its own user-facing message. */
 export type TranslateErrorCode =
   /** The demo's Claude usage budget is used up. */
   | 'BUDGET_EXCEEDED'
-  /** The source text is blank. */
+  /** The text is blank. */
   | 'EMPTY_INPUT'
-  /** The source text or context is over its length limit. */
+  /** A text is over its length limit. */
   | 'INPUT_TOO_LONG'
-  /** The translation was too long to finish. */
+  /** Claude's answer was too long to finish. */
   | 'OUTPUT_TOO_LONG'
-  /** This session or access code is translating too quickly. */
+  /** This session or access code is over its limit of Claude requests. */
   | 'RATE_LIMITED'
-  /** Claude declined to translate the text. */
+  /** Claude declined the request. */
   | 'REFUSED'
-  /** The source and target languages are the same. */
+  /** The two languages are the same. */
   | 'SAME_LANGUAGE'
   /** The server's Claude credentials or settings are wrong. */
   | 'SERVICE_MISCONFIGURED'

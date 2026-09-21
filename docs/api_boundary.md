@@ -95,7 +95,7 @@ What the schema does **not** carry, and is therefore duplicated by hand on both 
 
 - **Length limits.** Translation: 10,000 code points of source text, 2,000 of context
   (`Translation::Service::MAX_SOURCE_LENGTH` / `MAX_CONTEXT_LENGTH`; `MAX_SOURCE_LENGTH` /
-  `MAX_CONTEXT_LENGTH` in `frontend/app/src/pages/TranslatePage.tsx`). Diary: 10,000 for a body,
+  `MAX_CONTEXT_LENGTH` in `frontend/app/src/lib/translateLimits.ts`). Diary: 10,000 for a body,
   2,000 for a comment or question, 2,000 for a review (`Diary::Service`; `frontend/app/src/lib/diary.ts`).
   Both sides count Unicode code points (Ruby `String#length`; `codePointLength` in
   `frontend/app/src/lib/codePoints.ts`). The server is authoritative; the client's copy only drives
@@ -226,7 +226,7 @@ The response is HTTP 200 with `data` present and no top-level `errors`. The diar
 | `EMPTY_INPUT` | Text is blank (no Claude call) | no |
 | `INPUT_TOO_LONG` | Over a length limit (no Claude call) | no |
 | `SAME_LANGUAGE` | Source and target, or writing and notes language, are the same | no |
-| `RATE_LIMITED` | This session or access code is over its own limit; `retryAfterSeconds` set | yes |
+| `RATE_LIMITED` | This session or access code is over its limit of Claude calls (translations and tutor calls share it); `retryAfterSeconds` set | yes |
 | `TIMEOUT` | Claude took too long | yes |
 | `UPSTREAM_RATE_LIMITED` | Claude is rate-limiting us | yes |
 | `UPSTREAM_OVERLOADED` | Claude is overloaded | yes |
@@ -236,6 +236,11 @@ The response is HTTP 200 with `data` present and no top-level `errors`. The diar
 | `SERVICE_MISCONFIGURED` | The server's Claude credentials or settings are wrong | no |
 | `REFUSED` | Claude declined | no |
 | `OUTPUT_TOO_LONG` | The answer was too long to finish | no |
+
+The codes' descriptions in `backend/schema.graphql` (from `Types::TranslateErrorCodeType`) and the
+server's `message` for a failure either feature can meet (the rate limits, Claude's transport and
+configuration failures) name neither feature. Messages raised by one feature's own code, such as
+`ClaudeTranslator`'s "Claude declined to translate this text.", stay specific to it.
 
 `retryable` is computed from the code (`Translation::ErrorCode#retryable?`), not set per error.
 The client shows its own message per code rather than `message`, except for `RATE_LIMITED`, where
@@ -270,6 +275,7 @@ Their bodies are plain JSON, not GraphQL-shaped. In the order they run:
 | --- | --- | --- | --- |
 | 429 | `{"error":"rate_limited","retryAfterSeconds":N}` + `Retry-After` | rack-attack throttles | Over 60 `/graphql` requests a minute from one IP, or the sign-in throttles |
 | 429 | `{"error":"too_many_failed_attempts","retryAfterSeconds":N}` + `Retry-After` | rack-attack blocklist | IP banned from `POST /api/session` after repeated failed codes |
+| 411 | `{"error":"length_required"}` | `RequestSizeLimit` | A `Transfer-Encoding` header (a chunked body without `Content-Length`); browsers' `fetch`, curl and `bin/smoke` never send one |
 | 413 | `{"error":"payload_too_large"}` | `RequestSizeLimit` | `Content-Length` over 64 KB |
 | 415 | `{"error":"unsupported_media_type"}` | `RequestOriginCheck` | A non-GET/HEAD request whose media type is not `application/json` |
 | 403 | `{"error":"forbidden_origin"}` | `RequestOriginCheck` | A non-GET/HEAD request whose `Origin` header is missing or not the app's own |
@@ -291,6 +297,8 @@ protection; `/up` exempt), which the app itself never triggers.
 ```ts
 type RequestFailure =
   | { kind: "unauthenticated" }
+  | { kind: "notFound" }
+  | { kind: "invalid" }
   | { kind: "rateLimited"; retryAfterSeconds: number | null }
   | { kind: "blocked" }
   | { kind: "payloadTooLarge" }
@@ -300,26 +308,25 @@ type RequestFailure =
 ```
 
 - `describeRequestError(error)` takes what Apollo threw:
-  - `CombinedGraphQLErrors` (top-level GraphQL errors): `unauthenticated` if any error's
-    `extensions.code` is `UNAUTHENTICATED`, otherwise `internal`, carrying the first
-    `extensions.reference` found (null when there is none, as for validation errors).
+  - `CombinedGraphQLErrors` (top-level GraphQL errors): by `extensions.code`, checked in this
+    order across all the errors — `UNAUTHENTICATED` → `unauthenticated`, `NOT_FOUND` → `notFound`,
+    `INVALID` → `invalid` — and otherwise `internal`, carrying the first `extensions.reference`
+    found (null when there is none, as for a validation error, which has no code).
   - `ServerError` (a non-2xx response): `failureFromResponse(status, bodyText, Retry-After)`.
   - Anything else: `network`.
-- `failureFromResponse` maps 401 → `unauthenticated`; 403 and 415 → `blocked` (the Origin and
-  content-type checks; a reload is the fix); 413 → `payloadTooLarge`; 429 → `rateLimited`, reading
+- `failureFromResponse` maps 401 → `unauthenticated`; 403, 411 and 415 → `blocked` (the Origin,
+  size-header and content-type checks; a reload is the fix); 413 → `payloadTooLarge`; 429 → `rateLimited`, reading
   `retryAfterSeconds` from the JSON body, else the `Retry-After` header, else null; everything else
   (400, 5xx, a 404 from a misrouted request) → `server` with its status. Unparseable bodies are
   tolerated.
 - The 401 from `/graphql` is classified as `unauthenticated` whichever way Apollo surfaces it — as a
   `ServerError` by status, or as `CombinedGraphQLErrors` by its code.
-- `NOT_FOUND` and `INVALID` are **not** special to `describeRequestError`: they would come out as
-  `internal`. The diary, the only feature that can meet them, checks for them first:
-  `graphQLCode` in `frontend/app/src/pages/DiaryPage.tsx` reads the first string
-  `extensions.code`, and `reportFailure` shows "This entry doesn't exist any more." for `NOT_FOUND`
-  and "The languages can't change once an entry has had feedback." for `INVALID` before falling
-  back to `describeRequestError`. An autosave that lands after its entry was deleted drops the
-  `NOT_FOUND` silently. `diaryEntry(id:)`, a query, returns null for a missing entry instead of
-  raising.
+- Only the diary can meet `notFound` and `invalid`. `failureMessage` has generic sentences for
+  them ("That no longer exists.", "That change isn't allowed."); the diary's `reportFailure` in
+  `frontend/app/src/pages/DiaryPage.tsx` words them in its own terms instead: "This entry doesn't
+  exist any more." and "The languages can't change once an entry has had feedback." An autosave
+  that lands after its entry was deleted drops its `notFound` silently. `diaryEntry(id:)`, a
+  query, returns null for a missing entry instead of raising.
 - `unauthenticated` is never toasted by a page: the `ErrorLink` has already sent the app back to the
   access-code screen (see [Transport and auth](#transport-and-auth)).
 
@@ -354,7 +361,7 @@ Set on the schema (`backend/app/graphql/contextual_translate_schema.rb`) and aro
 | Complexity | 150 | `max_complexity` | One Claude call (100) plus ordinary fields |
 | Claude-calling fields | complexity 100 each | `Types::MutationType` | `translate`, `reviewDiaryEntry`, `startDiaryHelpThread`, `replyToDiaryThread`, `requestDiaryHint`, `suggestDiaryTopics` |
 | Validation errors reported | 100 | `validate_max_errors` | |
-| Request body | 64 KB | `RequestSizeLimit` (`Content-Length`) | Fits the largest valid request (10,000 + 2,000 characters even as 3-byte UTF-8) with room to spare |
+| Request body | 64 KB | `RequestSizeLimit` (`Content-Length`; a chunked body is refused with 411 rather than read to measure it) | Fits the largest valid request (10,000 + 2,000 characters even as 3-byte UTF-8) with room to spare |
 | `/graphql` requests | 60 per minute per IP | `backend/config/initializers/rack_attack.rb` | A coarse cap only |
 | Sign-in | 5 per minute and 20 per hour per IP; 10 failures in 10 minutes bans the IP for 10 minutes | `backend/config/initializers/rack_attack.rb`, `backend/lib/login_ban.rb` | Brute-forcing access codes |
 | Claude calls | per session and per access code | `Translation::RateLimiter`, inside the mutations | Returned as the typed `RATE_LIMITED` error, not an HTTP 429 |
@@ -413,7 +420,7 @@ make a request the server accepts. Browsers send `Origin` on every same-origin `
 DELETE, and Apollo's `HttpLink` sends JSON, so the SPA satisfies both without doing anything.
 A hand-made request (curl, `bin/smoke`) must add both headers; see `README.md` for examples.
 
-The order of checks on a controller request is size (413), then media type (415), then Origin
+The order of checks on a controller request is size (411/413), then media type (415), then Origin
 (403), then — on `/graphql` — session (401). rack-attack (429) runs before all of them, in Rack.
 
 ### `POST /api/session` and `DELETE /api/session`
@@ -428,7 +435,7 @@ code runs (`backend/app/controllers/api/sessions_controller.rb`).
 | 204 | none, plus `Set-Cookie` | The code is valid. The session is reset first (new id: no fixation), then filled. |
 | 401 | `{"error":"invalid_code"}` | Unknown, revoked, expired, missing, non-string or longer than 100 characters. Counts toward the IP's ban. |
 | 429 | `{"error":"rate_limited",…}` / `{"error":"too_many_failed_attempts",…}` | Throttled or banned |
-| 403 / 413 / 415 | as above | Origin, size or content type |
+| 403 / 411 / 413 / 415 | as above | Origin, size or content type |
 
 `DELETE /api/session` resets the session and answers 204, signed in or not. Only the server can
 clear the `HttpOnly` cookie, so `signOut()` treats the user as signed out only on a 2xx; anything
@@ -524,7 +531,7 @@ and session checks.
   content-type rejection, revocation and expiry, log filtering.
 - `backend/test/integration/request_size_limit_test.rb` and
   `backend/test/integration/rack_attack_test.rb`: the 64 KB limit
-  and the throttles, including path-spelling variants.
+  (and the 411 for a chunked body) and the throttles, including path-spelling variants.
 - `backend/test/lib/graphql_schema_dump_test.rb`: the committed schema matches the Ruby schema.
 
 ### Frontend: a fake server behind `fetch`
@@ -540,9 +547,12 @@ Frontend tests run the real Apollo client, `ErrorLink` and session helpers again
   401 body; `viewer()` a signed-in `Viewer` result.
 - `installFakeDiary(server, entries)` (`frontend/app/src/test/fakeDiary.ts`) registers a handler for
   every diary operation over an in-memory list: enough behaviour (reviews that split sentences and
-  compute code-point spans, superseded threads, hint levels, `SAME_LANGUAGE`) that the page's
-  queries, mutations and cache updates run end to end. `notFound()` returns the real server's
-  `NOT_FOUND` shape (HTTP 200, `data: null`).
+  compute code-point spans, superseded threads, the backend's preview rule, hint levels with
+  `Diary::FakeTutor`'s clarifying first answer to a "want" question, `INVALID`, `SAME_LANGUAGE`)
+  that the page's queries, mutations and cache updates run end to end. `notFound()` and
+  `invalid()` return the real server's `NOT_FOUND` and `INVALID` shapes (HTTP 200, `data: null`).
+  Like the server, it issues random UUIDs for ids; fixtures (`frontend/app/src/test/diaryFixtures.ts`)
+  do too, with fixed UUID literals in named constants wherever a test asserts on an id.
 - Failure cases are built from the same shapes the backend sends: payload `errors` with a code,
   top-level errors with `extensions.code`, and plain JSON 403/413/429 bodies with `Retry-After`
   (see `frontend/app/src/lib/requestFailure.test.ts`, `frontend/app/src/pages/TranslatePage.test.tsx`,
@@ -572,6 +582,7 @@ The fakes are hand-written, so the types do not police everything they return. T
 
 `bin/smoke ACCESS_CODE [BASE_URL]` checks a real deployment with curl the way the browser does:
 cookie jar, JSON bodies, the app's `Origin`. It checks `/up`, signs in (204), runs `viewer` (200),
-runs a `translate` and fails on any payload error, signs out (204), and checks that `viewer` is
-then 401. `README.md` covers running it against development, Rails directly (`ORIGIN=…`) and
+runs a `translate` and fails on any payload error, creates a diary entry, reads it back with
+`diaryEntry` and deletes it (no tutor call, so no Claude cost), signs out (204), and checks that
+`viewer` is then 401. `README.md` covers running it against development, Rails directly (`ORIGIN=…`) and
 production.

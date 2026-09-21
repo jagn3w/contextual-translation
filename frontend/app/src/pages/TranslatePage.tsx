@@ -11,6 +11,7 @@ import { codePointLength } from "../lib/codePoints.ts";
 import { failureMessage } from "../lib/failureMessage.ts";
 import { describeRequestError } from "../lib/requestFailure.ts";
 import { translateErrorMessage } from "../lib/translateErrorMessage.ts";
+import { MAX_CONTEXT_LENGTH, MAX_SOURCE_LENGTH } from "../lib/translateLimits.ts";
 import { useAutoGrowTextarea } from "../lib/useAutoGrowTextarea.ts";
 import { askingClaude, useElapsedSeconds } from "../lib/useElapsedSeconds.ts";
 
@@ -128,9 +129,6 @@ function rubyParts(parts: readonly RubyPart[]) {
     ),
   );
 }
-
-export const MAX_SOURCE_LENGTH = 10_000;
-export const MAX_CONTEXT_LENGTH = 2_000;
 
 /**
  * The translation workspace (design MVP, D1.4): the source pane (editable) and target pane
@@ -606,7 +604,7 @@ export function TranslatePage() {
             type="button"
             onClick={() => void runTranslation()}
             disabled={!canTranslate}
-            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="focus-ring rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {loading ? "Translating…" : "Update Translation"}
           </button>

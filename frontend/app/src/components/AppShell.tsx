@@ -43,7 +43,7 @@ export function AppShell({ route, onSignOut, children }: Props) {
         <button
           type="button"
           onClick={onSignOut}
-          className="ml-auto rounded-md px-2 py-1 text-sm text-muted hover:bg-surface hover:text-ink"
+          className="focus-ring ml-auto rounded-md px-2 py-1 text-sm text-muted hover:bg-surface hover:text-ink"
         >
           Sign out
         </button>

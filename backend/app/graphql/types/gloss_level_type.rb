@@ -4,7 +4,7 @@
 module Types
   class GlossLevelType < Types::BaseEnum
     graphql_name "GlossLevel"
-    description "How much of a translation to gloss with per-word definitions (design D2.3)."
+    description "How much of a translation to gloss with per-word definitions."
 
     value "NONE", "No glosses at all.", value: Translation::GlossLevel::NONE
     value "NOTABLE", "Only the words worth remarking on: ambiguous, idiomatic or register-carrying ones.",

@@ -1,7 +1,10 @@
 /**
  * A small in-memory diary behind the fake server: enough of the backend's behaviour (docs/diary.md)
  * that the page's queries, mutations and cache updates are exercised end to end. Every object
- * carries its `__typename`, as the real server's do, because Apollo's cache normalises on it.
+ * carries its `__typename`, as the real server's do, because Apollo's cache normalises on it, and a
+ * random UUID for its id, as the real server's public ids are. The preview, the hint levels and
+ * the refusals (NOT_FOUND, INVALID, SAME_LANGUAGE) follow the backend's rules; the words Claude
+ * would write are canned.
  */
 import type { DiaryEntry, DiaryThread, DiaryVerdict } from "../lib/diary.ts";
 import { type FakeServer, json } from "./fakeServer.ts";
@@ -15,23 +18,53 @@ export type FakeDiary = {
 
 const VERDICTS: DiaryVerdict[] = ["WRONG", "CORRECT", "IMPROVABLE"];
 
-let counter = 0;
-function nextId(prefix: string): string {
-  counter += 1;
-  return `${prefix}${counter}`;
+/** Ids are random UUIDs, as the real server's public ids are (docs/api_boundary.md). */
+function nextId(): string {
+  return crypto.randomUUID();
 }
 
 function now(): string {
   return new Date().toISOString();
 }
 
-/** First ~12 words, as the backend's preview. */
-function previewOf(body: string): string {
-  return body.trim().split(/\s+/).slice(0, 12).join(" ");
+/**
+ * DiaryEntry#preview: the first 12 words (at most 100 characters) for a language written with
+ * spaces, the first 40 characters for Japanese, and "…" when that cut anything. Characters are code
+ * points, as Ruby counts them; words are split on ASCII whitespace, as Ruby's String#split does.
+ */
+function previewOf(body: string, language: Language): string {
+  const words = body.split(/[ \t\n\v\f\r]+/).filter((word) => word !== "");
+  const text = Array.from(words.join(" "));
+  const cut =
+    language === "JA" ? text.slice(0, 40) : Array.from(words.slice(0, 12).join(" ")).slice(0, 100);
+  return cut.length < text.length ? `${cut.join("")}…` : cut.join("");
+}
+
+/**
+ * Diary::FakeTutor#hint: the first answer to a question with "want" in it asks which meaning the
+ * learner has in mind (clarifying), as "I want a hamburger" could mean two things; otherwise, and
+ * once the thread has anything in it, it is the hint at `level`.
+ */
+function hintFor(question: string, hasComments: boolean, level: number): { text: string; clarifying: boolean } {
+  if (!hasComments && /\bwant\b/i.test(question)) {
+    return { text: `Which do you mean? (for: ${question})`, clarifying: true };
+  }
+  return { text: level === 1 ? "Hint 1: think about the past tense." : `Hint ${level}: key vocabulary.`, clarifying: false };
 }
 
 export const notFound = () =>
   json({ data: null, errors: [{ message: "Not found", extensions: { code: "NOT_FOUND" } }] });
+
+export const invalid = () =>
+  json({
+    data: null,
+    errors: [
+      {
+        message: "An entry's languages can't be changed once it has had feedback or help.",
+        extensions: { code: "INVALID" },
+      },
+    ],
+  });
 
 function summary(entry: DiaryEntry) {
   return {
@@ -64,11 +97,11 @@ function full(entry: DiaryEntry) {
 }
 
 function tutorComment(body: string) {
-  return { id: nextId("c"), author: "TUTOR" as const, body, createdAt: now() };
+  return { id: nextId(), author: "TUTOR" as const, body, createdAt: now() };
 }
 
 function learnerComment(body: string) {
-  return { id: nextId("c"), author: "LEARNER" as const, body, createdAt: now() };
+  return { id: nextId(), author: "LEARNER" as const, body, createdAt: now() };
 }
 
 /** Sentences ending in 。 . ! or ?, each with the code-point offset it starts at. */
@@ -113,7 +146,7 @@ export function installFakeDiary(server: FakeServer, initial: DiaryEntry[] = [])
   server.onGraphql("CreateDiaryEntry", (body) => {
     const input = inputOf(body);
     const entry: DiaryEntry = {
-      id: nextId("n"),
+      id: nextId(),
       language: input["language"] as Language,
       notesLanguage: input["notesLanguage"] as Language,
       body: "",
@@ -134,12 +167,16 @@ export function installFakeDiary(server: FakeServer, initial: DiaryEntry[] = [])
     if (entry === undefined) return notFound();
     const language = (input["language"] as Language | undefined) ?? entry.language;
     const notesLanguage = (input["notesLanguage"] as Language | undefined) ?? entry.notesLanguage;
+    // Diary::Service#update_entry: the pair is fixed once feedback or help was written for it.
+    const changesLanguages = language !== entry.language || notesLanguage !== entry.notesLanguage;
+    if (changesLanguages && (entry.reviewedAt !== null || entry.threads.length > 0)) return invalid();
     if (language === notesLanguage) {
       const error = { __typename: "TranslateError", code: "SAME_LANGUAGE", message: "Same", retryable: false, retryAfterSeconds: null };
       return json({ data: { updateDiaryEntry: entryPayload(null, [error]) } });
     }
-    Object.assign(entry, { language, notesLanguage, updatedAt: now() });
-    if (typeof input["body"] === "string") Object.assign(entry, { body: input["body"], preview: previewOf(input["body"]) });
+    const text = typeof input["body"] === "string" ? input["body"] : entry.body;
+    // The server derives the preview on read, so a language change alone can change it too.
+    Object.assign(entry, { language, notesLanguage, body: text, preview: previewOf(text, language), updatedAt: now() });
     const saved = full(entry);
     return json({
       data: {
@@ -170,7 +207,7 @@ export function installFakeDiary(server: FakeServer, initial: DiaryEntry[] = [])
     const reviewed = sentences(text).map(({ text: sentence, startsAt }, index): DiaryThread => {
       const verdict = VERDICTS[index % VERDICTS.length] ?? "CORRECT";
       return {
-        id: nextId("t"),
+        id: nextId(),
         kind: "SENTENCE",
         verdict,
         sentence,
@@ -185,7 +222,7 @@ export function installFakeDiary(server: FakeServer, initial: DiaryEntry[] = [])
       };
     });
     const note: DiaryThread = {
-      id: nextId("t"),
+      id: nextId(),
       kind: "ENTRY",
       verdict: null,
       sentence: null,
@@ -200,7 +237,7 @@ export function installFakeDiary(server: FakeServer, initial: DiaryEntry[] = [])
     };
     Object.assign(entry, {
       body: text,
-      preview: previewOf(text),
+      preview: previewOf(text, entry.language),
       reviewedBody: text,
       reviewedAt: now(),
       threads: [...superseded, ...reviewed, note],
@@ -212,19 +249,22 @@ export function installFakeDiary(server: FakeServer, initial: DiaryEntry[] = [])
     const input = inputOf(body);
     const entry = find(input["entryId"] as string);
     if (entry === undefined) return notFound();
+    const question = input["question"] as string;
+    const hint = hintFor(question, false, 1);
     const thread: DiaryThread = {
-      id: nextId("h"),
+      id: nextId(),
       kind: "HELP",
       verdict: null,
-      sentence: input["question"] as string,
+      sentence: question,
       startsAt: null,
       length: null,
       title: null,
       current: true,
-      hintLevel: 1,
+      // A clarifying question is not the first hint, so the next one still is.
+      hintLevel: hint.clarifying ? 0 : 1,
       resolved: false,
       createdAt: now(),
-      comments: [tutorComment("Hint 1: think about the past tense.")],
+      comments: [tutorComment(hint.text)],
     };
     entry.threads.push(thread);
     return json({ data: { startDiaryHelpThread: threadPayload(thread) } });
@@ -241,8 +281,11 @@ export function installFakeDiary(server: FakeServer, initial: DiaryEntry[] = [])
   server.onGraphql("RequestDiaryHint", (body) => {
     const thread = findThread(inputOf(body)["threadId"] as string);
     if (thread === undefined) return notFound();
-    thread.hintLevel += 1;
-    thread.comments.push(tutorComment(`Hint ${thread.hintLevel}: key vocabulary.`));
+    const level = thread.hintLevel + 1;
+    const hint = hintFor(thread.sentence ?? "", thread.comments.length > 0, level);
+    thread.comments.push(tutorComment(hint.text));
+    // A clarifying answer leaves the level where it was: the hint it replaced is still to come.
+    if (!hint.clarifying) thread.hintLevel = level;
     return json({ data: { requestDiaryHint: threadPayload(thread) } });
   });
 
