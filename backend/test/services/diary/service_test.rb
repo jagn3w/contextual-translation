@@ -406,6 +406,23 @@ class Diary::ServiceTest < ActiveSupport::TestCase
     assert_not_includes log.string, "xxx"
   end
 
+  test "a thread too big for the character cap is skipped without crowding out the older ones" do
+    @entry.update!(review_count: 1)
+    cap = Diary::Service::MAX_CONTEXT_CHARS
+    small = Array.new(2) { thread(round: 1).tap { |record| record.comments.create!(author: "tutor", body: "small") } }
+    middle = thread(round: 1).tap { |record| record.comments.create!(author: "tutor", body: "x" * (cap - 20)) }
+    huge = thread(round: 1).tap { |record| record.comments.create!(author: "tutor", body: "x" * (cap + 1)) }
+    log = StringIO.new
+
+    context = Diary::Service.review_context(@entry.reload, logger: ActiveSupport::Logger.new(log))
+
+    # The newest thread alone is over the cap; the middle one fills most of it; the small older
+    # ones still fit beside it.
+    assert_equal [ *small, middle ].map(&:id), context.map(&:id)
+    assert_not_includes context.map(&:id), huge.id
+    assert_equal "Diary review context over #{cap} characters: dropped 1 of 4 threads\n", log.string
+  end
+
   test "a review or help answer for a language pair the entry no longer has is refused and saves nothing" do
     entry_id = @entry.id
     switch = -> { DiaryEntry.find(entry_id).update!(language: "ja") }

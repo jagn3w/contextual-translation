@@ -461,13 +461,16 @@ There is no "am I signed in?" endpoint. On load, and whenever the app restarts i
 ### Apollo Client and the `ErrorLink`
 
 `createApolloClient` (`frontend/app/src/lib/apollo.ts`) builds the one client: an `HttpLink` to
-`/graphql` with `credentials: "same-origin"`, an `InMemoryCache`, and an `ErrorLink` in front of it.
+`/graphql` with `credentials: "same-origin"`, an `InMemoryCache`, and an `ErrorLink` in front of it
+(and a `sessionLink` in front of that, below).
 The `ErrorLink` watches every operation's errors: if `isUnauthenticated(error)` and the operation is
 not `Viewer`, it calls `onUnauthenticated`, which in `App` marks the session ended and remounts
 `SessionBoundary` (whose `Viewer` query then routes to the access-code screen). `Viewer` is excluded
 because its 401 is how the app learns it is signed out in the first place, and `SessionBoundary`
 handles it directly. After a deliberate sign-out, a request still in flight that comes back 401 is
-ignored rather than reported as "session ended". On sign-out the client's store is cleared.
+ignored rather than reported as "session ended". Whenever the session changes hands (sign-out, an
+ended session, sign-in) the client's store is cleared, and a `sessionLink` in front of the
+`ErrorLink` drops the result of any operation that was sent in the previous session.
 
 The `ErrorLink` does not swallow the error: the operation still rejects, and the page that sent it
 sees `unauthenticated` and stays quiet.

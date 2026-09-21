@@ -74,7 +74,7 @@ cannot grow a request until every attempt times out (and editing the entry could
 | Diary `<entry>` | 2,000 characters in a review; 10,000 (the saved body) as a reply's context | `Diary::Service::MAX_REVIEW_LENGTH`, `MAX_BODY_LENGTH` |
 | A learner comment or question | 2,000 characters | `Diary::Service::MAX_COMMENT_LENGTH` |
 | The comments of one thread (review, reply and hint messages) | the first comment plus the latest 8; the ones between become `<omitted count="k"/>` | `Diary::Service::MAX_THREAD_COMMENTS` |
-| A review's `<feedback_threads>` | at most 60 threads, then only the most recent that fit in 30,000 characters of thread text (sentences, titles, kept comments; tags not counted), oldest dropped first | `Diary::Service::MAX_CONTEXT_THREADS`, `MAX_CONTEXT_CHARS` |
+| A review's `<feedback_threads>` | at most 60 threads, then, newest first, each that still fits in 30,000 characters of thread text (sentences, titles, kept comments; tags not counted); one that would overflow is skipped, not a stop | `Diary::Service::MAX_CONTEXT_THREADS`, `MAX_CONTEXT_CHARS` |
 | Topics `<recent_entry>`, `<entry>` | 5 previews of about 100 characters at most; the draft, up to 10,000 | `Diary::Service::RECENT_ENTRIES`, `DiaryEntry::PREVIEW_MAX_CHARACTERS`, `Diary::Service::MAX_BODY_LENGTH` |
 
 The diary numbers are estimates, not measurements (see "The diary limits are unmeasured" at the
@@ -294,9 +294,10 @@ The context threads come from `Diary::Service.review_context(entry)`:
 - every thread from the **most recent round** (`review_round == entry.review_count`), resolved or
   not; minus
 - superseded (`current: false`) sentence threads that have no learner comment;
-- at most `MAX_CONTEXT_THREADS` (60), the most recent by id; then, newest first, only as many as
-  fit in `MAX_CONTEXT_CHARS` (30,000) characters of thread text (sentence, title and the comments
-  sent), dropping the oldest; sent in creation order. When either cap drops threads it logs the
+- at most `MAX_CONTEXT_THREADS` (60), the most recent by id; then, newest first, each thread that
+  still fits in `MAX_CONTEXT_CHARS` (30,000) characters of thread text (sentence, title and the
+  comments sent). A thread that would overflow is skipped and older, smaller ones are still
+  considered, so one huge thread cannot crowd out the rest; sent in creation order. When either cap drops threads it logs the
   counts at `warn`, never the text.
 
 Before the first review the context is just the open help threads. Each thread carries its first

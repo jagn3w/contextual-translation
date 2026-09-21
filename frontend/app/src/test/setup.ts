@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach } from "vitest";
 import { forgetDrafts } from "../lib/unsavedDrafts.ts";
 
@@ -13,6 +14,8 @@ Object.assign(Element.prototype, {
 
 afterEach(() => {
   cleanup();
-  // Module state, like sonner's: a draft one test left unsaved must not seed the next test's entry.
+  // Module state: a draft one test left unsaved must not seed the next test's entry, and a toast
+  // one test raised on purpose stays in sonner's store and would show in the next test's Toaster.
   forgetDrafts();
+  toast.dismiss();
 });

@@ -10,7 +10,7 @@ import { failureMessage } from "./lib/failureMessage.ts";
 import { describeRequestError } from "./lib/requestFailure.ts";
 import { useRoute } from "./lib/router.ts";
 import { signOut } from "./lib/session.ts";
-import { wipeSessionState } from "./lib/sessionState.ts";
+import { retireSession, wipeSessionState } from "./lib/sessionState.ts";
 import { flushAutosaves } from "./lib/useAutosave.ts";
 import { DiaryPage } from "./pages/DiaryPage.tsx";
 import { TranslatePage } from "./pages/TranslatePage.tsx";
@@ -26,8 +26,9 @@ type Restart = "signedIn" | "signedOut" | "sessionEnded";
  * Owns the Apollo client and the session lifecycle. Bumping `epoch` remounts SessionBoundary,
  * which re-asks the server who we are — after sign-in, sign-out, or a session ending mid-use.
  *
- * Every restart goes through `wiping` first: the signed-in tree unmounts, `wipeSessionState` forgets
- * the unsaved drafts and clears the Apollo cache, and only then is the epoch bumped. So the next
+ * Every restart retires the old session at once (operations still out lose their results; see
+ * `retireSession`), then goes through `wiping`: the signed-in tree unmounts, `wipeSessionState`
+ * forgets the unsaved drafts and clears the Apollo cache, and only then is the epoch bumped. So the next
  * session — possibly another access code's, on the same tab — never sees the last one's entries or
  * drafts, whether it ended by signing out, by expiring or being revoked, or by a sign-out in another
  * tab. Unmounting before the wipe matters: `clearStore` cancels in-flight queries, and a mounted
@@ -37,14 +38,19 @@ export function App({ createClient = createApolloClient }: Props) {
   const [epoch, setEpoch] = useState(0);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [wiping, setWiping] = useState<Restart | null>(null);
-  // Set when there is no session, by a deliberate sign-out or a session ending, until the next
-  // sign-in. A request still out when the session went comes back unauthenticated, and that is no
-  // news: after a sign-out it must not replace the gate with "Your session ended", and after an
-  // ended session it must not wipe and restart a second time.
+  // Set when there is no session, by a deliberate sign-out or a session ending, until the server
+  // next confirms one (the Viewer query succeeding: a sign-in here, or a Retry after signing in
+  // from another tab). A request still out when the session went comes back unauthenticated, and
+  // that is no news: after a sign-out it must not replace the gate with "Your session ended", and
+  // after an ended session it must not wipe and restart a second time.
   const sessionGone = useRef(false);
   const restart = useCallback((reason: Restart) => {
     sessionGone.current = reason !== "signedIn";
+    retireSession();
     setWiping(reason);
+  }, []);
+  const sessionLive = useCallback(() => {
+    sessionGone.current = false;
   }, []);
   const [client] = useState(() =>
     createClient({
@@ -72,7 +78,7 @@ export function App({ createClient = createApolloClient }: Props) {
   return (
     <ApolloProvider client={client}>
       {wiping === null ? (
-        <SessionBoundary key={epoch} sessionEnded={sessionEnded} onRestart={restart} />
+        <SessionBoundary key={epoch} sessionEnded={sessionEnded} onRestart={restart} onSessionLive={sessionLive} />
       ) : (
         <StatusScreen message="Loading…" />
       )}
@@ -84,11 +90,18 @@ export function App({ createClient = createApolloClient }: Props) {
 type BoundaryProps = {
   sessionEnded: boolean;
   onRestart: (reason: "signedIn" | "signedOut") => void;
+  /** The server has just confirmed a session: later refusals mean it ended again. */
+  onSessionLive: () => void;
 };
 
 /** Restores the session on load via the Viewer query (design D4.2) and routes to the gate or the app. */
-function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
+function SessionBoundary({ sessionEnded, onRestart, onSessionLive }: BoundaryProps) {
   const { data, error, loading, refetch } = useQuery(ViewerDocument, { fetchPolicy: "network-only" });
+  const signedIn = data !== undefined && error === undefined;
+
+  useEffect(() => {
+    if (signedIn) onSessionLive();
+  }, [signedIn, onSessionLive]);
 
   const handleSignOut = useCallback(async () => {
     // Diary drafts still waiting on their autosave go first: sent after the session is deleted,

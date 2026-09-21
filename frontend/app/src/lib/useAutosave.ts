@@ -22,6 +22,15 @@ export type Autosave = {
 const pendingFlushes = new Set<() => Promise<void>>();
 
 /**
+ * Stops waiting on every save still out, when a session is retired (sessionState.ts): its results are
+ * dropped, so they would never settle, and the next sign-out's flushAutosaves would wait out its
+ * timeout on them.
+ */
+export function forgetPendingAutosaves(): void {
+  pendingFlushes.clear();
+}
+
+/**
  * Saves every draft still pending anywhere in the app, resolving once each has landed or failed —
  * or after `timeoutMs`, since a save that hangs mustn't keep the learner from signing out.
  */

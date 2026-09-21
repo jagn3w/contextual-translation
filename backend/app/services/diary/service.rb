@@ -35,9 +35,11 @@ module Diary
     # well inside a request.
     MAX_THREAD_COMMENTS = 8
     # The most characters of thread text (sentences, titles and the kept comments; tags not
-    # counted) one review sends as context. Threads are dropped oldest first until the rest fit.
-    # An ESTIMATE, not measured: room for one discussion at the MAX_THREAD_COMMENTS cap with every
-    # learner comment at MAX_COMMENT_LENGTH (9 x 2,000 = 18,000) beside dozens of ordinary threads.
+    # counted) one review sends as context. Threads are taken newest first while they fit; one that
+    # would overflow is left out and older, smaller ones still get their turn, so a single huge
+    # thread (Claude's replies have no length cap of their own) cannot crowd out all the rest.
+    # An ESTIMATE, not measured: room for one long discussion at the MAX_THREAD_COMMENTS cap (nine
+    # comments averaging 2,000 characters is 18,000) beside dozens of ordinary threads.
     # Input is read far faster than a reply is written, so this stops unbounded growth rather than
     # saving seconds; to check it, read the input_tokens and duration logged for "diary review".
     MAX_CONTEXT_CHARS = 30_000
@@ -137,7 +139,7 @@ module Diary
     # older rounds are left out, and so are superseded sentence threads the learner never replied
     # to: a later round's feedback replaced them, and nobody resolves those, so they would
     # otherwise be sent on every review for good. At most MAX_CONTEXT_THREADS, the most recent,
-    # and then only as many of those, newest first, as fit in MAX_CONTEXT_CHARS; in creation order.
+    # and of those, newest first, each that still fits in MAX_CONTEXT_CHARS; in creation order.
     sig { params(entry: DiaryEntry, logger: Claude::MessageCaller::Logger).returns(T::Array[DiaryThread]) }
     def self.review_context(entry, logger: Rails.logger)
       latest = entry.review_count
@@ -153,8 +155,14 @@ module Diary
         logger.warn("Diary review context capped: dropped #{total - MAX_CONTEXT_THREADS} of #{total} threads")
       end
       threads = scope.reorder(id: :desc).limit(MAX_CONTEXT_THREADS).includes(:comments).to_a
-      chars = 0
-      kept = threads.take_while { |thread| (chars += context_chars(context_thread(thread))) <= MAX_CONTEXT_CHARS }
+      budget = MAX_CONTEXT_CHARS
+      kept = threads.select do |thread|
+        size = context_chars(context_thread(thread))
+        next false if size > budget
+
+        budget -= size
+        true
+      end
       if kept.size < threads.size
         # Counts only, as above.
         logger.warn("Diary review context over #{MAX_CONTEXT_CHARS} characters: " \

@@ -477,6 +477,88 @@ describe("DiaryPage", () => {
     expect(screen.queryByText(/Something unexpected/)).not.toBeInTheDocument();
   });
 
+  it("notices a later session ending after a session was restored by Try again, not by signing in here", async () => {
+    window.history.replaceState(null, "", `/diary/${MORNING_ID}`);
+    let viewerAnswer: () => Response | Promise<Response> = () => viewer();
+    server.onGraphql("Viewer", () => viewerAnswer());
+    installFakeDiary(server, [MORNING]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Diary entry");
+
+    // The session ends, and asking the server who we are then fails outright.
+    viewerAnswer = () => Promise.reject(new TypeError("Failed to fetch"));
+    server.onGraphql("SaveDiaryEntry", unauthenticated);
+    await user.type(screen.getByLabelText("Diary entry"), "美味しかった。");
+    const retry = await screen.findByRole("button", { name: "Try again" }, { timeout: 3000 });
+
+    // Signed in from another tab meanwhile: Try again finds a session and restores the app.
+    viewerAnswer = () => viewer();
+    installFakeDiary(server, [MORNING]);
+    await user.click(retry);
+    const box = await screen.findByLabelText("Diary entry");
+
+    // That session ends too: this tab must notice, not keep ignoring refusals.
+    viewerAnswer = unauthenticated;
+    server.onGraphql("SaveDiaryEntry", unauthenticated);
+    await user.type(box, "楽しかった。");
+    expect(await screen.findByLabelText("Access code", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByText(/session ended/i)).toBeInTheDocument();
+  });
+
+  it.each(["answered", "failed"] as const)(
+    "drops a feedback request %s after its code signed out and another signed in",
+    async (outcome) => {
+      window.history.replaceState(null, "", `/diary/${MORNING_ID}`);
+      let session: "A" | "B" | null = "A";
+      server.onGraphql("Viewer", () => (session === null ? unauthenticated() : viewer()));
+      server.onSession("DELETE", () => {
+        session = null;
+        return new Response(null, { status: 204 });
+      });
+      server.onSession("POST", () => {
+        session = "B";
+        return new Response(null, { status: 204 });
+      });
+      // A's review is held at the server until B is signed in; the fake diary still writes the answer.
+      const handlers = new Map<string, Parameters<FakeServer["onGraphql"]>[1]>();
+      const register = server.onGraphql;
+      server.onGraphql = (name, handler) => {
+        handlers.set(name, handler);
+        register(name, handler);
+      };
+      installFakeDiary(server, [MORNING]);
+      const review = handlers.get("ReviewDiaryEntry");
+      let release: () => void = () => undefined;
+      register("ReviewDiaryEntry", (body) =>
+        new Promise<Response>((resolve, reject) => {
+          release = () =>
+            outcome === "answered" ? resolve(review!(body)) : reject(new TypeError("Failed to fetch"));
+        }),
+      );
+      let client: ApolloClient | undefined;
+      const user = userEvent.setup();
+      render(<App createClient={(options) => (client = createApolloClient(options))} />);
+      await screen.findByLabelText("Diary entry");
+      await user.click(screen.getByRole("button", { name: "Get feedback" }));
+      await waitFor(() => expect(requestsFor("ReviewDiaryEntry")).toHaveLength(1));
+
+      await user.click(screen.getByRole("button", { name: "Sign out" }));
+      installFakeDiary(server, [EVENING]);
+      await user.type(await screen.findByLabelText("Access code"), "ctx-B");
+      await user.click(screen.getByRole("button", { name: "Continue" }));
+      const entries = within(await screen.findByRole("navigation", { name: "Diary entries" }));
+      expect(await entries.findByRole("link", { name: /Hoy fui al cine/ })).toBeInTheDocument();
+
+      release();
+      // Give A's answer time to arrive and be (not) acted on.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(JSON.stringify(client?.extract())).not.toContain("朝ご飯");
+      expect(screen.queryByText(/朝ご飯/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Couldn't|server|went wrong/i)).not.toBeInTheDocument();
+    },
+  );
+
   it("treats a malformed entry URL as an entry that doesn't exist", async () => {
     await openDiary("/diary/%ZZ", [MORNING]);
     expect(await screen.findByText("This entry doesn't exist, or belongs to another access code.")).toBeInTheDocument();

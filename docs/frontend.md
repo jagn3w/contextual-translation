@@ -78,9 +78,16 @@ App                  owns the Apollo client, the Toaster and the session epoch
   remounts the whole signed-in tree, which re-runs `Viewer` and throws away every page's local
   state. It is bumped on sign-in, on sign-out, and when any operation reports the session is gone.
 - **Wiping the old session.** Every one of those restarts first wipes what the client holds for the
-  session: `wipeSessionState` (`frontend/app/src/lib/sessionState.ts`) forgets the unsaved diary
-  drafts (`lib/unsavedDrafts.ts`) and clears the Apollo store (every entry, body, thread and
-  translation). It is the only way to wipe, so no path does half of it. `App` sets a `wiping`
+  session. At once, `retireSession` (`frontend/app/src/lib/sessionState.ts`) moves the client on to
+  a new session number, forgets the unsaved diary drafts (`lib/unsavedDrafts.ts`) and stops waiting
+  on autosaves still out. The number matters because `clearStore` cancels only queries: a mutation
+  still out (Get feedback, a hint, an autosave) would otherwise finish inside the next session,
+  write the old code's entry into its cache and toast on its screen. The first link in the Apollo
+  client (`sessionLink`, `lib/apollo.ts`) stamps each operation with the number when it starts and
+  drops the result of one that returns after it changed: no cache write, and the caller's promise
+  never settles (the caller has unmounted by then). Then `wipeSessionState` retires again and
+  clears the Apollo store (every entry, body, thread and translation). It is the only way to wipe,
+  so no path does half of it. `App` sets a `wiping`
   state that unmounts `SessionBoundary` (a brief "Loading…"), runs the wipe in an effect, and only
   then bumps the epoch: `clearStore` cancels queries still in flight, and with nothing mounted the
   cancellation reaches no screen or toast. It happens three times:
@@ -103,7 +110,9 @@ App                  owns the Apollo client, the Toaster and the session epoch
 - **Session ended versus signed out.** When an operation other than `Viewer` fails
   unauthenticated, the client's `onUnauthenticated` callback restarts with `sessionEnded` set, and
   the gate says "Your session ended. Enter the access code again." A `sessionGone` ref, set by a
-  sign-out or an ended session until the next sign-in, makes later unauthenticated answers no-ops:
+  sign-out or an ended session until the server next confirms a session (`Viewer` succeeding,
+  whether after a sign-in here or a "Try again" after signing in from another tab), makes later
+  unauthenticated answers no-ops:
   a request that was still in flight when the session went comes back refused, and that is no news
   — it must neither call a deliberate sign-out an ended session nor wipe and restart again.
 
@@ -139,7 +148,9 @@ every HTML path, so paths are real URLs — reloadable, bookmarkable, back-butto
 - `frontend/app/src/lib/apollo.ts` builds one `ApolloClient` per `App`: an `HttpLink` to `/graphql` with
   `credentials: "same-origin"`, behind an `ErrorLink` that calls `onUnauthenticated` for any
   operation except `Viewer` whose error classifies as unauthenticated (for `Viewer`, a 401 is how
-  the app learns it is signed out in the first place). The cache is a default `InMemoryCache`.
+  the app learns it is signed out in the first place), itself behind `sessionLink`, which drops the
+  results of operations sent in a session that has since ended (above). The cache is a default
+  `InMemoryCache`.
 - **Typed documents.** Operations live in `frontend/app/src/graphql/*.graphql` (`viewer`, `translate`, `diary`).
   `pnpm codegen` generates `frontend/app/src/gql/` from them and the committed `backend/schema.graphql`, and the
   code imports the `…Document` constants and types from `frontend/app/src/gql/graphql.ts`. Fragment masking is
@@ -300,7 +311,7 @@ component that asked keeps the learner's text in place to try again.
 - **Vitest + jsdom + Testing Library** (`test` block in `vite.config.ts`: `environment: "jsdom"`,
   `globals: true`, `css: false`). Tests sit beside the code as `*.test.ts(x)`.
 - `frontend/app/src/test/setup.ts` adds the jest-dom matchers, stubs the pointer-capture and `scrollIntoView`
-  APIs Radix calls and jsdom lacks, and after each test runs `cleanup()` and `forgetDrafts()`.
+  APIs Radix calls and jsdom lacks, and after each test runs `cleanup()`, `forgetDrafts()` and `toast.dismiss()` (sonner keeps toasts in module state).
 - **Test through the real stack.** Page and flow tests render `<App />` with the real Apollo
   client and session helpers; only `fetch` is faked. `installFakeServer()`
   (`frontend/app/src/test/fakeServer.ts`) stubs global `fetch`, routes `/graphql` by `operationName` and

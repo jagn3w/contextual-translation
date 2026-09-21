@@ -55,8 +55,8 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
 
   Resolved threads from older rounds are left out, and so are superseded (`current: false`)
   sentence threads the learner never commented on: the latest round's feedback replaced them. At
-  most 60 threads are sent, the most recent, and of those only as many (newest first) as fit in
-  30,000 characters of thread text; the backend logs (as counts only) when it drops any. Each
+  most 60 threads are sent, the most recent, and of those, newest first, each that still fits in
+  30,000 characters of thread text (a thread too big to fit is skipped, not a stop); the backend logs (as counts only) when it drops any. Each
   thread's discussion is cut too (below).
   A superseded sentence thread that is sent is marked `superseded="true"` in the prompt.
   With this context the tutor can say "fixed", notice a repeated mistake, and avoid repeating an
