@@ -1,4 +1,4 @@
-import { type KeyboardEvent, useId, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Language } from "../../gql/graphql.ts";
 import { codePointLength } from "../../lib/codePoints.ts";
 import { type DiaryThread, MAX_COMMENT_LENGTH } from "../../lib/diary.ts";
@@ -45,6 +45,16 @@ export function ThreadConversation({ thread, actions, notesLanguage, replyLabel 
   const hintElapsed = useElapsedSeconds(hinting || replying);
   const busy = hinting || replying;
   const announce = useAnnounce();
+  const lastComment = useRef<HTMLLIElement>(null);
+  const commentCount = useRef(thread.comments.length);
+
+  // A reply or hint lands below what the learner was reading, and in the feedback card, which
+  // scrolls on its own, past the bottom of it: bring the newest comment into view. Not on first
+  // render, which would scroll the page to every thread as it mounts.
+  useEffect(() => {
+    if (thread.comments.length > commentCount.current) lastComment.current?.scrollIntoView({ block: "nearest" });
+    commentCount.current = thread.comments.length;
+  }, [thread.comments.length]);
 
   async function requestHint() {
     announce("Asking Claude…");
@@ -53,12 +63,36 @@ export function ThreadConversation({ thread, actions, notesLanguage, replyLabel 
     announce(ok === false ? "Couldn't get a hint." : "Hint received.");
   }
 
+  const threadButtons = (
+    <>
+      {thread.kind === "HELP" && !thread.resolved && (
+        <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => void requestHint()}>
+          Another hint
+        </button>
+      )}
+      <button
+        type="button"
+        className={SECONDARY_BUTTON}
+        // Not while Claude is answering either: the answer comes back as the whole thread, and
+        // resolving under it would leave the one that lands last deciding what the card shows.
+        disabled={resolving || busy}
+        onClick={() => void runResolve(() => actions.onResolve(thread.id, !thread.resolved))}
+      >
+        {thread.resolved ? "Reopen" : "Resolve"}
+      </button>
+    </>
+  );
+
   return (
     <div className="space-y-3">
       {thread.comments.length > 0 && (
         <ol className="space-y-2" lang={languageTag(notesLanguage)}>
-          {thread.comments.map((comment) => (
-            <li key={comment.id} className="text-sm leading-snug">
+          {thread.comments.map((comment, index) => (
+            <li
+              key={comment.id}
+              ref={index === thread.comments.length - 1 ? lastComment : undefined}
+              className="scroll-mt-10 text-sm leading-snug"
+            >
               <span className="block text-xs font-medium text-muted" lang="en">
                 {comment.author === "TUTOR" ? "Claude" : "You"}
               </span>
@@ -69,10 +103,13 @@ export function ThreadConversation({ thread, actions, notesLanguage, replyLabel 
       )}
       {/* Seen, not heard: the diary's live region (useAnnounce) says it to screen readers. */}
       {busy && <p className="text-xs text-muted">{askingClaude(hintElapsed) ?? "Asking Claude…"}</p>}
-      {!thread.resolved && (
+      {thread.resolved ? (
+        <div className="flex flex-wrap items-center gap-2">{threadButtons}</div>
+      ) : (
         <ReplyBox
           label={replyLabel}
           disabled={busy}
+          extraActions={threadButtons}
           onSend={async (body) => {
             setReplying(true);
             announce("Asking Claude…");
@@ -86,28 +123,6 @@ export function ThreadConversation({ thread, actions, notesLanguage, replyLabel 
           }}
         />
       )}
-      <div className="flex flex-wrap items-center gap-2">
-        {thread.kind === "HELP" && !thread.resolved && (
-          <button
-            type="button"
-            className={SECONDARY_BUTTON}
-            disabled={busy}
-            onClick={() => void requestHint()}
-          >
-            Another hint
-          </button>
-        )}
-        <button
-          type="button"
-          className={SECONDARY_BUTTON}
-          // Not while Claude is answering either: the answer comes back as the whole thread, and
-          // resolving under it would leave the one that lands last deciding what the card shows.
-          disabled={resolving || busy}
-          onClick={() => void runResolve(() => actions.onResolve(thread.id, !thread.resolved))}
-        >
-          {thread.resolved ? "Reopen" : "Resolve"}
-        </button>
-      </div>
     </div>
   );
 }
@@ -120,10 +135,12 @@ type ReplyBoxProps = {
   sendLabel?: string;
   placeholder?: string | undefined;
   lang?: string | undefined;
+  /** More buttons for the row Send is on, at its start. */
+  extraActions?: ReactNode;
 };
 
 /** A labelled textarea with a send button; ⌘/Ctrl+Enter sends too, as it does everywhere else. */
-export function ReplyBox({ label, disabled, onSend, sendLabel = "Send", placeholder, lang }: ReplyBoxProps) {
+export function ReplyBox({ label, disabled, onSend, sendLabel = "Send", placeholder, lang, extraActions }: ReplyBoxProps) {
   const id = useId();
   const [text, setText] = useState("");
   const [sending, run] = usePending();
@@ -165,14 +182,17 @@ export function ReplyBox({ label, disabled, onSend, sendLabel = "Send", placehol
         onKeyDown={handleKeyDown}
         className="focus-ring mt-1 block w-full resize-y rounded-md border border-line bg-canvas px-2.5 py-1.5 text-sm leading-snug placeholder:text-muted/60"
       />
-      <div className="mt-1.5 flex items-center justify-between gap-2">
-        <span className={`text-xs ${tooLong ? "text-danger" : "text-muted"}`}>
-          {length > MAX_COMMENT_LENGTH * 0.8 &&
-            `${length.toLocaleString()} / ${MAX_COMMENT_LENGTH.toLocaleString()}`}
-        </span>
-        <button type="button" className={SECONDARY_BUTTON} disabled={!canSend} onClick={() => void send()}>
-          {sendLabel}
-        </button>
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        {extraActions}
+        <div className="ml-auto flex items-center gap-2">
+          <span className={`text-xs ${tooLong ? "text-danger" : "text-muted"}`}>
+            {length > MAX_COMMENT_LENGTH * 0.8 &&
+              `${length.toLocaleString()} / ${MAX_COMMENT_LENGTH.toLocaleString()}`}
+          </span>
+          <button type="button" className={SECONDARY_BUTTON} disabled={!canSend} onClick={() => void send()}>
+            {sendLabel}
+          </button>
+        </div>
       </div>
     </div>
   );
