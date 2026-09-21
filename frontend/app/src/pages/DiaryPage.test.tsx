@@ -4,7 +4,8 @@ import { App } from "../App.tsx";
 import { diaryErrorMessage } from "./DiaryPage.tsx";
 import { entry, localIso } from "../test/diaryFixtures.ts";
 import { type FakeDiary, installFakeDiary } from "../test/fakeDiary.ts";
-import { type FakeServer, installFakeServer, json, viewer } from "../test/fakeServer.ts";
+import { type FakeServer, installFakeServer, json, unauthenticated, viewer } from "../test/fakeServer.ts";
+import type { TranslateErrorCode } from "../gql/graphql.ts";
 import type { DiaryEntry } from "../lib/diary.ts";
 
 let server: FakeServer;
@@ -273,6 +274,71 @@ describe("DiaryPage", () => {
     expect(within(panel).getByLabelText(/What do you want to say\?/)).toHaveValue("How do I say it rained?");
   });
 
+  it("moves the focus to the feedback when a ⌘/Ctrl+Enter review takes the textarea away", async () => {
+    const { user } = await openDiary("/diary/e1", [MORNING]);
+    const status = screen.getByRole("status");
+    expect(status).toBeEmptyDOMElement();
+
+    await user.click(await screen.findByLabelText("Diary entry"));
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    const feedback = await screen.findByRole("region", { name: "Claude's feedback" });
+    await waitFor(() => expect(feedback).toHaveFocus());
+    expect(status).toHaveTextContent("Feedback ready.");
+  });
+
+  it("saves a pending draft before signing out, and signs out without a session-ended notice", async () => {
+    const { user, diary } = await openDiary("/diary/e1", [MORNING]);
+    let signedIn = true;
+    server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
+    server.onSession("DELETE", () => {
+      signedIn = false;
+      return new Response(null, { status: 204 });
+    });
+
+    await user.type(await screen.findByLabelText("Diary entry"), "美味しかった。");
+    // Straight away, inside the autosave's pause.
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByLabelText("Access code")).toBeInTheDocument();
+    const saveAt = server.requests.findIndex((request) => request.body["operationName"] === "SaveDiaryEntry");
+    const signOutAt = server.requests.findIndex((request) => request.method === "DELETE");
+    expect(saveAt).toBeGreaterThanOrEqual(0);
+    expect(saveAt).toBeLessThan(signOutAt);
+    expect(diary.find("e1")?.body).toBe("朝ご飯を食べました。美味しかった。");
+    expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
+  });
+
+  it("doesn't call a deliberate sign-out an ended session when a request still out comes back refused", async () => {
+    const { user } = await openDiary("/diary/e1", [MORNING]);
+    let signedIn = true;
+    server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
+    server.onSession("DELETE", () => {
+      signedIn = false;
+      return new Response(null, { status: 204 });
+    });
+    let answer: () => void = () => undefined;
+    server.onGraphql("StartDiaryHelpThread", () => new Promise<Response>((resolve) => (answer = () => resolve(unauthenticated()))));
+    const panel = await screen.findByRole("region", { name: "Help me say…" });
+
+    await user.type(within(panel).getByLabelText(/What do you want to say\?/), "How do I say it rained?");
+    await user.click(within(panel).getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByLabelText("Access code");
+    answer();
+
+    await waitFor(() => expect(requestsFor("Viewer").length).toBeGreaterThanOrEqual(2));
+    // Give the refused answer time to arrive and be (not) acted on.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByLabelText("Access code")).toBeInTheDocument();
+    expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
+  });
+
+  it("treats a malformed entry URL as an entry that doesn't exist", async () => {
+    await openDiary("/diary/%ZZ", [MORNING]);
+    expect(await screen.findByText("This entry doesn't exist, or belongs to another access code.")).toBeInTheDocument();
+  });
+
   it("says an entry doesn't exist when its id is missing or another code's", async () => {
     await openDiary("/diary/someone-elses", [MORNING]);
 
@@ -282,7 +348,7 @@ describe("DiaryPage", () => {
 });
 
 describe("diaryErrorMessage", () => {
-  const error = (code: "EMPTY_INPUT" | "SAME_LANGUAGE" | "RATE_LIMITED", retryAfterSeconds: number | null = null) => ({
+  const error = (code: TranslateErrorCode, retryAfterSeconds: number | null = null) => ({
     code,
     message: "Server wording.",
     retryable: false,
@@ -292,6 +358,21 @@ describe("diaryErrorMessage", () => {
   it("words the input checks for a diary rather than a translation", () => {
     expect(diaryErrorMessage(error("EMPTY_INPUT"))).toBe("Write something first.");
     expect(diaryErrorMessage(error("SAME_LANGUAGE"))).toMatch(/must be different/);
+  });
+
+  it("names every length limit the diary has, from the same constants the page checks", () => {
+    expect(diaryErrorMessage(error("INPUT_TOO_LONG"))).toBe(
+      "That's over the length limit: 10,000 characters for an entry, 2,000 for feedback at a time, 2,000 for a question or reply. Shorten it and try again.",
+    );
+  });
+
+  it("says what Claude declined or ran out of time on without calling it a translation", () => {
+    for (const code of ["REFUSED", "OUTPUT_TOO_LONG", "TIMEOUT"] as const) {
+      const message = diaryErrorMessage(error(code));
+      expect(message).toMatch(/Claude/);
+      expect(message).not.toMatch(/translat/i);
+    }
+    expect(diaryErrorMessage(error("REFUSED"))).toBe("Claude declined to answer this. Try rewording it.");
   });
 
   it("shares every other message with Phrases", () => {

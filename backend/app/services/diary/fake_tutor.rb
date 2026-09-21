@@ -48,10 +48,18 @@ module Diary
       "Fake reply (#{request.notes_language.serialize}) to: #{last.truncate(60)}"
     end
 
-    sig { override.params(request: HintRequest).returns(String) }
+    # A question with "want" in it is ambiguous the way "I want a hamburger" is, so the first
+    # answer asks which meaning the learner has in mind; once the thread has anything in it the
+    # tutor goes with the likeliest meaning, as HINT_SYSTEM tells Claude to.
+    sig { override.params(request: HintRequest).returns(Hint) }
     def hint(request)
+      question = request.question.truncate(60)
+      if request.comments.empty? && request.question.match?(/\bwant\b/i)
+        return Hint.new(text: "Fake question: which do you mean? (for: #{question})", clarifying: true)
+      end
+
       stage = HINT_STAGES.fetch([ request.level, HINT_STAGES.size ].min - 1)
-      "Fake hint #{request.level} (#{stage}) for: #{request.question.truncate(60)}"
+      Hint.new(text: "Fake hint #{request.level} (#{stage}) for: #{question}", clarifying: false)
     end
 
     sig { override.params(request: TopicsRequest).returns(T::Array[Topic]) }

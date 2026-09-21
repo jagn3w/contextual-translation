@@ -73,6 +73,13 @@ module Diary
       const :level, Integer
     end
 
+    # A HELP thread's answer. `clarifying` is true when the tutor asked what the learner means
+    # instead of giving the hint at the requested level, so it does not count as a hint given.
+    class Hint < T::Struct
+      const :text, String
+      const :clarifying, T::Boolean
+    end
+
     class TopicsRequest < T::Struct
       const :language, Translation::Language
       const :notes_language, Translation::Language
@@ -93,7 +100,7 @@ module Diary
     sig { abstract.params(request: ReplyRequest).returns(String) }
     def reply(request); end
 
-    sig { abstract.params(request: HintRequest).returns(String) }
+    sig { abstract.params(request: HintRequest).returns(Hint) }
     def hint(request); end
 
     sig { abstract.params(request: TopicsRequest).returns(T::Array[Topic]) }

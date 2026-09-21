@@ -14,6 +14,11 @@ describe("parseRoute", () => {
     expect(parseRoute("/diaryx")).toEqual({ page: "phrases" });
   });
 
+  it("keeps a malformed escape as a raw id instead of throwing", () => {
+    expect(parseRoute("/diary/%ZZ")).toEqual({ page: "diary", entryId: "%ZZ" });
+    expect(parseRoute("/diary/%E0%A4%A")).toEqual({ page: "diary", entryId: "%E0%A4%A" });
+  });
+
   it("round-trips with routePath", () => {
     // Entry ids are opaque strings: in production a random UUID.
     const uuid = "/diary/0b6f3c52-8d1e-4a7b-9c2d-5e4f6a7b8c9d";

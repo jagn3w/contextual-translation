@@ -24,9 +24,23 @@ class Diary::FakeTutorTest < ActiveSupport::TestCase
         notes_language: Translation::Language::EN, comments: [], level:))
     end
 
-    assert_equal "Fake hint 1 (broad hint) for: How do I say hi?", hint.(1)
-    assert_equal "Fake hint 2 (key vocabulary) for: How do I say hi?", hint.(2)
-    assert_includes hint.(7), "(full sentence)"
+    assert_equal({ "text" => "Fake hint 1 (broad hint) for: How do I say hi?", "clarifying" => false }, hint.(1).serialize)
+    assert_equal "Fake hint 2 (key vocabulary) for: How do I say hi?", hint.(2).text
+    assert_includes hint.(7).text, "(full sentence)"
+  end
+
+  test "a question with want in it is first answered with a question about what the learner means" do
+    hint = ->(comments) do
+      @tutor.hint(Diary::Tutor::HintRequest.new(question: "How do I say I want a hamburger?",
+        language: Translation::Language::JA, notes_language: Translation::Language::EN, comments:, level: 1))
+    end
+    asked = hint.([])
+    assert asked.clarifying
+    assert_equal "Fake question: which do you mean? (for: How do I say I want a hamburger?)", asked.text
+
+    again = hint.([ Diary::Tutor::Comment.new(author: Diary::Author::TUTOR, body: asked.text) ])
+    assert_not again.clarifying, "asked again without an answer, it goes with the likeliest meaning"
+    assert_match(/\AFake hint 1 /, again.text)
   end
 
   test "replies and topics look fake" do

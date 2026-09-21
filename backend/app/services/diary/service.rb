@@ -11,6 +11,21 @@ module Diary
 
     MAX_BODY_LENGTH = 10_000
     MAX_COMMENT_LENGTH = 2_000
+    # The longest body a review works on. A review's reply repeats the entry sentence by sentence
+    # with a tip for each (see ClaudeTutor::REVIEW_MAX_TOKENS for the arithmetic), so its length
+    # grows with the entry and has to arrive inside the 30 s SDK timeout; a longer body can still
+    # be saved as a draft, just not reviewed in one go.
+    #
+    # 2,000 characters is an ESTIMATE that has NOT been measured against the real API, borrowed
+    # from Translation::Prompt::FURIGANA_LIMIT, which bounds a reply of much the same size (the
+    # text over again plus annotations). To measure it, review Japanese entries of several lengths
+    # made of short sentences (the costliest shape: one tip per sentence) with TRANSLATOR=claude,
+    # and read the duration and output_tokens that Claude::MessageCaller#log_usage writes for each
+    # "diary review" call; the limit is where the slowest one starts to approach the timeout.
+    MAX_REVIEW_LENGTH = 2_000
+    # The most threads one review sends the tutor as context, most recent first. Unresolved threads
+    # from every round are kept, so without a cap the request would grow with the entry's history.
+    MAX_CONTEXT_THREADS = 60
     # How many recent entries the topic ideas steer away from.
     RECENT_ENTRIES = 5
 
@@ -24,6 +39,11 @@ module Diary
     # editing their text), which the GraphQL layer reports as a top-level INVALID error.
     class Invalid < StandardError; end
 
+    # The entry or thread was deleted while the tutor was answering, so there is nothing left to
+    # save the answer to. The message names what is gone ("diary entry"); the GraphQL layer reports
+    # it as the same NOT_FOUND error a missing id gets.
+    class NotFound < StandardError; end
+
     sig do
       params(access_code: AccessCode, language: Translation::Language, notes_language: Translation::Language)
         .returns(DiaryEntry)
@@ -34,8 +54,8 @@ module Diary
     end
 
     # Saving a draft, and/or changing the language pair: no tutor call, and an empty body is fine.
-    # Nil leaves a field as it is. The pair is fixed once the entry has been reviewed, because its
-    # threads were written for it.
+    # Nil leaves a field as it is. The pair is fixed once the entry has any thread — feedback or
+    # a "Help me say…" question, which can come before any review — because they were written for it.
     sig do
       params(entry: DiaryEntry, body: T.nilable(String), language: T.nilable(Translation::Language),
         notes_language: T.nilable(Translation::Language)).returns(DiaryEntry)
@@ -45,8 +65,8 @@ module Diary
       new_language = language || entry.language_enum
       new_notes_language = notes_language || entry.notes_language_enum
       changes_languages = new_language != entry.language_enum || new_notes_language != entry.notes_language_enum
-      if changes_languages && entry.reviewed_at
-        raise Invalid, "An entry's languages can't be changed once it has had feedback."
+      if changes_languages && (entry.reviewed_at || entry.threads.exists?)
+        raise Invalid, "An entry's languages can't be changed once it has had feedback or help."
       end
 
       validate_languages!(new_language, new_notes_language)
@@ -55,11 +75,17 @@ module Diary
     end
 
     # Saves the body and asks the tutor to review it. Nothing is written unless the tutor
-    # succeeds, so a failed review leaves the entry and its threads as they were.
+    # succeeds, so a failed review leaves the entry and its threads as they were. A body over
+    # MAX_REVIEW_LENGTH is refused without saving it either: the draft autosave has its own call.
     sig { params(entry: DiaryEntry, body: String, session: Authentication::Current).returns(DiaryEntry) }
     def review(entry, body, session:)
       validate_body!(body)
       raise Translation::Error.new(Translation::ErrorCode::EMPTY_INPUT, "Write something to get feedback on.") if body.strip.empty?
+      if body.length > MAX_REVIEW_LENGTH
+        raise Translation::Error.new(Translation::ErrorCode::INPUT_TOO_LONG,
+          "Feedback works on up to #{MAX_REVIEW_LENGTH.to_fs(:delimited)} characters at a time — " \
+          "shorten the entry, or carry on in a new one, and try again.")
+      end
 
       @rate_limiter.check!(session)
       round = entry.review_count + 1
@@ -75,13 +101,25 @@ module Diary
 
     # The threads the tutor sees on a new review (docs/diary.md): every unresolved thread from any
     # round, plus every thread from the most recent round, resolved or not. Resolved threads from
-    # older rounds are left out.
-    sig { params(entry: DiaryEntry).returns(T::Array[DiaryThread]) }
-    def self.review_context(entry)
+    # older rounds are left out, and so are superseded sentence threads the learner never replied
+    # to: a later round's feedback replaced them, and nobody resolves those, so they would
+    # otherwise be sent on every review for good. At most MAX_CONTEXT_THREADS, the most recent,
+    # in creation order.
+    sig { params(entry: DiaryEntry, logger: Claude::MessageCaller::Logger).returns(T::Array[DiaryThread]) }
+    def self.review_context(entry, logger: Rails.logger)
       latest = entry.review_count
-      scope = entry.threads.includes(:comments)
+      scope = entry.threads
       scope = latest.positive? ? scope.where(resolved_at: nil).or(scope.where(review_round: latest)) : scope.where(resolved_at: nil)
-      scope.to_a
+      replied = DiaryComment.where(author: Author::LEARNER.serialize).select(:diary_thread_id)
+      superseded = entry.threads.where(kind: ThreadKind::SENTENCE.serialize, current: false).where.not(id: replied)
+      scope = scope.where.not(id: superseded.select(:id))
+
+      total = scope.count
+      if total > MAX_CONTEXT_THREADS
+        # Counts only: thread text is the learner's and is never logged.
+        logger.warn("Diary review context capped: dropped #{total - MAX_CONTEXT_THREADS} of #{total} threads")
+      end
+      scope.reorder(id: :desc).limit(MAX_CONTEXT_THREADS).includes(:comments).to_a.reverse
     end
 
     # A "Help me say…" thread: the learner's question and the first, broad hint.
@@ -95,8 +133,11 @@ module Diary
         )
       )
       DiaryThread.transaction do
-        thread = entry.threads.create!(kind: ThreadKind::HELP.serialize, sentence: question, hint_level: 1)
-        thread.comments.create!(author: Author::TUTOR.serialize, body: hint)
+        lock_or_not_found!(entry, "diary entry")
+        # A question about what they mean is not the first hint, so the next one still is.
+        thread = entry.threads.create!(kind: ThreadKind::HELP.serialize, sentence: question,
+          hint_level: hint.clarifying ? 0 : 1)
+        thread.comments.create!(author: Author::TUTOR.serialize, body: hint.text)
         thread
       end
     end
@@ -117,10 +158,12 @@ module Diary
         )
       )
       DiaryThread.transaction do
+        lock_or_not_found!(thread, "diary thread")
         thread.comments.create!(author: Author::LEARNER.serialize, body:)
         thread.comments.create!(author: Author::TUTOR.serialize, body: answer)
       end
-      thread.comments.reset
+      # lock_or_not_found! reloaded the thread, so it carries anything that changed during the
+      # call (a resolve) rather than the state it was read in.
       thread
     end
 
@@ -138,10 +181,13 @@ module Diary
         )
       )
       DiaryThread.transaction do
-        thread.comments.create!(author: Author::TUTOR.serialize, body: hint)
-        thread.update!(hint_level: level)
+        lock_or_not_found!(thread, "diary thread")
+        thread.comments.create!(author: Author::TUTOR.serialize, body: hint.text)
+        # A question about what they mean leaves the level where it was: the hint it replaced
+        # is still to come.
+        thread.update!(hint_level: level) unless hint.clarifying
       end
-      thread.comments.reset
+      # Reloaded by lock_or_not_found!, as in #reply.
       thread
     end
 
@@ -180,6 +226,7 @@ module Diary
     def persist_review(entry, body, round, review)
       now = Time.current
       DiaryEntry.transaction do
+        lock_or_not_found!(entry, "diary entry")
         entry.update!(body:, reviewed_body: body, reviewed_at: now, review_count: round)
         # Superseded, not resolved: the learner never said they had dealt with them.
         entry.threads.where(kind: ThreadKind::SENTENCE.serialize, current: true).update_all(current: false, updated_at: now)
@@ -200,6 +247,17 @@ module Diary
         end
       end
       entry.threads.reset
+    end
+
+    # A tutor call takes seconds, and the learner can delete the entry meanwhile (taking its
+    # threads with it). Called first inside the transaction that saves the answer: it reloads the
+    # record under a row lock, so the delete either happened already (NotFound, not a foreign-key
+    # error) or waits until the answer is saved and then removes it along with the rest.
+    sig { params(record: T.any(DiaryEntry, DiaryThread), what: String).void }
+    def lock_or_not_found!(record, what)
+      record.lock!
+    rescue ActiveRecord::RecordNotFound
+      raise NotFound, what
     end
 
     sig { params(thread: DiaryThread, extra: T.nilable(Tutor::Comment)).returns(Tutor::ContextThread) }

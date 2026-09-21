@@ -105,7 +105,8 @@ module Diary
       - 4 or more: the full sentence, with a short explanation of how it is built.
       Build on the earlier hints rather than repeating them.
 
-      Return the hint in "hint".
+      Return the hint, or your question about what they mean, in "hint". Set "clarifying" to true
+      when it is that question instead of the hint at <level>, and false when it is the hint.
     PROMPT
 
     TOPICS_SYSTEM = <<~PROMPT
@@ -177,8 +178,14 @@ module Diary
     HINT_SCHEMA = T.let(
       {
         type: "object",
-        properties: { hint: { type: "string" } },
-        required: %w[hint],
+        properties: {
+          hint: { type: "string" },
+          clarifying: {
+            type: "boolean",
+            description: "true when this reply is a question about what the student means rather than a hint"
+          }
+        },
+        required: %w[hint clarifying],
         additionalProperties: false
       }.freeze,
       T::Hash[Symbol, T.untyped]

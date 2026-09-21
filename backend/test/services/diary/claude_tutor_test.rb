@@ -93,7 +93,7 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
   end
 
   test "usage is logged under the operation's name" do
-    stub_request(:post, MESSAGES_URL).to_return(response(hint: "Think about the past tense."))
+    stub_request(:post, MESSAGES_URL).to_return(response(hint: "Think about the past tense.", clarifying: false))
 
     hint_request
 
@@ -101,13 +101,14 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
   end
 
   test "a hint sends the level, the question and the thread so far" do
-    stub_request(:post, MESSAGES_URL).to_return(response(hint: "  Think about the past tense.  "))
+    stub_request(:post, MESSAGES_URL).to_return(response(hint: "  Think about the past tense.  ", clarifying: false))
 
-    assert_equal "Think about the past tense.", hint_request
+    assert_equal({ "text" => "Think about the past tense.", "clarifying" => false }, hint_request.serialize)
 
     assert_requested(:post, MESSAGES_URL) do |req|
       body = JSON.parse(req.body)
-      assert_equal %w[hint], body.dig("output_config", "format", "schema", "required")
+      assert_equal %w[hint clarifying], body.dig("output_config", "format", "schema", "required")
+      assert_equal "boolean", body.dig("output_config", "format", "schema", "properties", "clarifying", "type")
       assert_includes body["system"], "the one thing that unlocks"
       content = body.dig("messages", 0, "content")
       assert_includes content, "<level>2</level>"
@@ -115,6 +116,16 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
       assert_includes content, %(<comment author="you">Use the preterite.</comment>)
       true
     end
+  end
+
+  test "a hint says whether it is a question about what the student means, and must say so" do
+    stub_request(:post, MESSAGES_URL).to_return(response(hint: "Eat one, or have one?", clarifying: true))
+    assert hint_request.clarifying
+
+    WebMock.reset!
+    stub_request(:post, MESSAGES_URL).to_return(response(hint: "Eat one, or have one?"))
+    assert_tutor_error(:UPSTREAM_ERROR) { hint_request }
+    assert_includes @log.string, "a hint without its clarifying flag"
   end
 
   test "a reply sends the entry and the thread ending with the learner's question" do

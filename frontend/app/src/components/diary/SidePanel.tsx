@@ -3,6 +3,7 @@ import { type DiaryEntry, type DiaryThread, type DiaryTopic } from "../../lib/di
 import { languageName, languageTag } from "../../lib/languages.ts";
 import { askingClaude, useElapsedSeconds } from "../../lib/useElapsedSeconds.ts";
 import { usePending } from "../../lib/usePending.ts";
+import { useAnnounce } from "./announce.ts";
 import { VerdictBadge } from "./SentenceHighlight.tsx";
 import { ReplyBox, SECONDARY_BUTTON, type ThreadActions, ThreadConversation } from "./ThreadConversation.tsx";
 
@@ -132,10 +133,18 @@ function Ideas({ entry, onSuggestTopics }: Pick<Props, "entry" | "onSuggestTopic
   const [topics, setTopics] = useState<DiaryTopic[] | null>(null);
   const [asking, run] = usePending();
   const elapsed = useElapsedSeconds(asking);
+  const announce = useAnnounce();
 
   async function ask() {
+    announce("Asking Claude…");
     const result = await run(onSuggestTopics);
-    if (result !== undefined && result !== null) setTopics(result);
+    if (result === undefined) return; // a second click while the first was out
+    if (result === null) {
+      announce("Couldn't get ideas.");
+      return;
+    }
+    setTopics(result);
+    announce("Ideas ready.");
   }
 
   return (
@@ -168,6 +177,7 @@ function Ideas({ entry, onSuggestTopics }: Pick<Props, "entry" | "onSuggestTopic
 function HelpAsk({ entry, onStartHelp }: Pick<Props, "entry" | "onStartHelp">) {
   const [asking, setAsking] = useState(false);
   const elapsed = useElapsedSeconds(asking);
+  const announce = useAnnounce();
   return (
     <div>
       <ReplyBox
@@ -178,18 +188,18 @@ function HelpAsk({ entry, onStartHelp }: Pick<Props, "entry" | "onStartHelp">) {
         disabled={asking}
         onSend={async (question) => {
           setAsking(true);
+          announce("Asking Claude…");
           try {
-            return await onStartHelp(question);
+            const ok = await onStartHelp(question);
+            announce(ok ? "Hint received." : "Couldn't get a hint.");
+            return ok;
           } finally {
             setAsking(false);
           }
         }}
       />
-      {asking && (
-        <p className="mt-1 text-xs text-muted" role="status">
-          {askingClaude(elapsed) ?? "Asking Claude…"}
-        </p>
-      )}
+      {/* Seen, not heard: the diary's live region (useAnnounce) says it to screen readers. */}
+      {asking && <p className="mt-1 text-xs text-muted">{askingClaude(elapsed) ?? "Asking Claude…"}</p>}
     </div>
   );
 }

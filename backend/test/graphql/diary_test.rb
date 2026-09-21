@@ -51,6 +51,14 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     def review(_request) = raise(@error)
   end
 
+  # Deletes the entry being reviewed while "answering", as a learner deleting it mid-call would.
+  class DeletingTutor < Diary::FakeTutor
+    def review(request)
+      DiaryEntry.sole.destroy!
+      super
+    end
+  end
+
   setup { @access_code, = sign_in }
   teardown { Diary.tutor = nil }
 
@@ -94,6 +102,16 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     assert_equal "es", DiaryEntry.find_by!(public_id: entry["id"]).language
     same = mutate(UPDATE, "updateDiaryEntry", id: entry["id"], language: "ES", body: "Hola otra vez.")
     assert_empty same["errors"], "restating the same pair is not a change"
+  end
+
+  test "a help thread fixes the languages, even before any review" do
+    entry = create_entry(language: "ES", notesLanguage: "EN")
+    mutate(HELP, "startDiaryHelpThread", entryId: entry["id"], question: "How do I say hi?")
+
+    body = graphql(UPDATE, variables: { input: { id: entry["id"], language: "JA" } })
+
+    assert_equal "INVALID", body.dig("errors", 0, "extensions", "code")
+    assert_equal "es", DiaryEntry.find_by!(public_id: entry["id"]).language
   end
 
   test "an entry's language and notes language must differ" do
@@ -304,6 +322,18 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     assert_equal 2, replied["hintLevel"], "a reply is not a general hint"
   end
 
+  test "a help thread that opens with a question about the learner's meaning is at hint level 0" do
+    entry = create_entry(language: "JA", notesLanguage: "EN")
+    thread = mutate(HELP, "startDiaryHelpThread", entryId: entry["id"], question: "How do I say I want a hamburger?")["thread"]
+
+    assert_equal 0, thread["hintLevel"]
+    assert_match(/\AFake question: which do you mean\?/, thread.dig("comments", 0, "body"))
+
+    hinted = mutate(HINT, "requestDiaryHint", threadId: thread["id"])["thread"]
+    assert_equal 1, hinted["hintLevel"]
+    assert_match(/\AFake hint 1 \(broad hint\)/, hinted["comments"].last["body"])
+  end
+
   test "hints are only for help threads" do
     entry = create_entry
     thread_id = mutate(REVIEW, "reviewDiaryEntry", id: entry["id"], body: "Hola.").dig("entry", "threads", 0, "id")
@@ -338,6 +368,29 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
       mutate(HELP, "startDiaryHelpThread", entryId: entry["id"], question: "q" * 2_001).dig("errors", 0, "code")
     assert_equal "", DiaryEntry.find_by!(public_id: entry["id"]).body
     assert_empty DiaryThread.where(diary_entry: DiaryEntry.find_by!(public_id: entry["id"]))
+  end
+
+  test "a body over the review limit is INPUT_TOO_LONG and saves nothing" do
+    entry = create_entry
+    mutate(UPDATE, "updateDiaryEntry", id: entry["id"], body: "a" * 2_001)
+
+    result = mutate(REVIEW, "reviewDiaryEntry", id: entry["id"], body: "b" * 2_001)
+
+    assert_nil result["entry"]
+    assert_equal "INPUT_TOO_LONG", result.dig("errors", 0, "code")
+    assert_match(/\AFeedback works on up to 2,000 characters at a time/, result.dig("errors", 0, "message"))
+    assert_equal [ "a" * 2_001, 0 ], DiaryEntry.find_by!(public_id: entry["id"]).then { |record| [ record.body, record.review_count ] }
+  end
+
+  test "an entry deleted while the tutor reviews it is NOT_FOUND, not INTERNAL" do
+    Diary.tutor = DeletingTutor.new
+    entry = create_entry
+
+    body = graphql(REVIEW, variables: { input: { id: entry["id"], body: "Hola." } })
+
+    assert_equal "NOT_FOUND", body.dig("errors", 0, "extensions", "code")
+    assert_equal "No such diary entry.", body.dig("errors", 0, "message")
+    assert_not DiaryEntry.exists?(public_id: entry["id"])
   end
 
   test "a tutor failure is a TranslateError and saves nothing" do

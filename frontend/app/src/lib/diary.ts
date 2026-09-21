@@ -26,6 +26,8 @@ export type DiaryTopic = SuggestDiaryTopicsMutation["suggestDiaryTopics"]["topic
 /** The same limits the backend enforces, counted in code points (see codePoints.ts). */
 export const MAX_BODY_LENGTH = 10_000;
 export const MAX_COMMENT_LENGTH = 2_000;
+/** Feedback (reviewDiaryEntry) takes less than an entry can hold. */
+export const MAX_REVIEW_LENGTH = 2_000;
 
 /**
  * A verdict in words. The highlight colour is never the only thing saying which verdict a sentence

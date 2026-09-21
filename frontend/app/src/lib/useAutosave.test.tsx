@@ -1,11 +1,18 @@
-import { act, renderHook } from "@testing-library/react";
-import { useAutosave } from "./useAutosave.ts";
+import { act, cleanup, renderHook } from "@testing-library/react";
+import { flushAutosaves, useAutosave } from "./useAutosave.ts";
 
 beforeEach(() => {
   vi.useFakeTimers();
 });
 
-afterEach(() => {
+// Every save any test left unsettled. The hooks register with a module-level list that sign-out
+// awaits (flushAutosaves), so one left hanging would stall a later test's flush.
+const unsettled: Array<(ok: boolean) => void> = [];
+
+afterEach(async () => {
+  // Unmount first — that sends each hook's last save — then let every save land.
+  cleanup();
+  while (unsettled.length > 0) await act(async () => unsettled.shift()?.(true));
   vi.useRealTimers();
 });
 
@@ -16,6 +23,7 @@ function controlledSave() {
     (value: string) =>
       new Promise<boolean>((resolve) => {
         calls.push({ value, resolve });
+        unsettled.push(resolve);
       }),
   );
   return { save, calls };
@@ -107,5 +115,70 @@ describe("useAutosave", () => {
 
     expect(save).not.toHaveBeenCalled();
     expect(result.current.state).toBe("saved");
+  });
+
+  it("resends the draft when a review saved older text over a newer save", async () => {
+    const { save, calls } = controlledSave();
+    const { result, rerender } = renderHook(({ value }) => useAutosave(value, save, 100), {
+      initialProps: { value: "A" },
+    });
+
+    // Get feedback went out with "A"; the learner typed on, and that save landed first.
+    rerender({ value: "AB" });
+    act(() => vi.advanceTimersByTime(100));
+    await act(async () => calls[0]?.resolve(true));
+    expect(result.current.state).toBe("saved");
+
+    // Then the review wrote "A" on the server.
+    act(() => result.current.markSaved("A"));
+    expect(result.current.state).toBe("saving");
+    expect(save).toHaveBeenLastCalledWith("AB");
+    await act(async () => calls[1]?.resolve(true));
+    expect(result.current.state).toBe("saved");
+  });
+
+  it("resends a save that was in flight when a review wrote its own text", async () => {
+    const { save, calls } = controlledSave();
+    const { result, rerender } = renderHook(({ value }) => useAutosave(value, save, 100), {
+      initialProps: { value: "A" },
+    });
+
+    rerender({ value: "AB" });
+    act(() => vi.advanceTimersByTime(100));
+    act(() => result.current.markSaved("A"));
+    await act(async () => calls[0]?.resolve(true));
+
+    // The server may have got "AB" before the review's "A", so "AB" goes again.
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenLastCalledWith("AB");
+    await act(async () => calls[1]?.resolve(true));
+    expect(result.current.state).toBe("saved");
+  });
+
+  it("saves the difference after the pause when the draft starts ahead of the server", () => {
+    const { save } = controlledSave();
+    const { result } = renderHook(() => useAutosave("newer", save, 100, "older"));
+
+    expect(result.current.state).toBe("saving");
+    act(() => vi.advanceTimersByTime(100));
+    expect(save).toHaveBeenCalledWith("newer");
+  });
+
+  it("lets a sign-out wait for every pending save, including one sent on unmount", async () => {
+    const { save, calls } = controlledSave();
+    const { rerender, unmount } = renderHook(({ value }) => useAutosave(value, save, 800), {
+      initialProps: { value: "" },
+    });
+    rerender({ value: "draft" });
+    unmount();
+
+    let flushed = false;
+    const waiting = flushAutosaves().then(() => (flushed = true));
+    await act(async () => undefined);
+    expect(flushed).toBe(false);
+    await act(async () => calls[0]?.resolve(true));
+    await waiting;
+    expect(flushed).toBe(true);
+    expect(save).toHaveBeenCalledTimes(1);
   });
 });

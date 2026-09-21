@@ -5,6 +5,7 @@ import { type DiaryThread, MAX_COMMENT_LENGTH } from "../../lib/diary.ts";
 import { languageTag } from "../../lib/languages.ts";
 import { usePending } from "../../lib/usePending.ts";
 import { askingClaude, useElapsedSeconds } from "../../lib/useElapsedSeconds.ts";
+import { useAnnounce } from "./announce.ts";
 
 /**
  * What the page can do to a thread. Each returns the mutation's promise, so the component that
@@ -43,6 +44,14 @@ export function ThreadConversation({ thread, actions, notesLanguage, replyLabel 
   const [replying, setReplying] = useState(false);
   const hintElapsed = useElapsedSeconds(hinting || replying);
   const busy = hinting || replying;
+  const announce = useAnnounce();
+
+  async function requestHint() {
+    announce("Asking Claude…");
+    const ok = await runHint(() => actions.onRequestHint(thread.id));
+    if (ok === undefined) return; // a second click while the first was out
+    announce(ok === false ? "Couldn't get a hint." : "Hint received.");
+  }
 
   return (
     <div className="space-y-3">
@@ -58,19 +67,19 @@ export function ThreadConversation({ thread, actions, notesLanguage, replyLabel 
           ))}
         </ol>
       )}
-      {busy && (
-        <p className="text-xs text-muted" role="status">
-          {askingClaude(hintElapsed) ?? "Asking Claude…"}
-        </p>
-      )}
+      {/* Seen, not heard: the diary's live region (useAnnounce) says it to screen readers. */}
+      {busy && <p className="text-xs text-muted">{askingClaude(hintElapsed) ?? "Asking Claude…"}</p>}
       {!thread.resolved && (
         <ReplyBox
           label={replyLabel}
           disabled={busy}
           onSend={async (body) => {
             setReplying(true);
+            announce("Asking Claude…");
             try {
-              return await actions.onReply(thread.id, body);
+              const ok = await actions.onReply(thread.id, body);
+              announce(ok ? "Reply received." : "Couldn't get a reply.");
+              return ok;
             } finally {
               setReplying(false);
             }
@@ -83,7 +92,7 @@ export function ThreadConversation({ thread, actions, notesLanguage, replyLabel 
             type="button"
             className={SECONDARY_BUTTON}
             disabled={busy}
-            onClick={() => void runHint(() => actions.onRequestHint(thread.id))}
+            onClick={() => void requestHint()}
           >
             Another hint
           </button>
@@ -91,7 +100,9 @@ export function ThreadConversation({ thread, actions, notesLanguage, replyLabel 
         <button
           type="button"
           className={SECONDARY_BUTTON}
-          disabled={resolving}
+          // Not while Claude is answering either: the answer comes back as the whole thread, and
+          // resolving under it would leave the one that lands last deciding what the card shows.
+          disabled={resolving || busy}
           onClick={() => void runResolve(() => actions.onResolve(thread.id, !thread.resolved))}
         >
           {thread.resolved ? "Reopen" : "Resolve"}

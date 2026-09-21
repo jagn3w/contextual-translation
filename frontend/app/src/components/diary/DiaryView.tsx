@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { Language } from "../../gql/graphql.ts";
 import type { DiaryEntry, DiaryEntrySummary, DiaryTopic } from "../../lib/diary.ts";
+import { draftSaved, rememberDraft, unsavedDraft } from "../../lib/unsavedDrafts.ts";
 import { useAutosave } from "../../lib/useAutosave.ts";
+import { AnnounceContext } from "./announce.ts";
 import { EntryEditor } from "./EntryEditor.tsx";
 import { EntryList } from "./EntryList.tsx";
 import { SidePanel } from "./SidePanel.tsx";
@@ -51,43 +53,61 @@ type Props = {
  * — capped in height, so a long diary doesn't push today's entry off the first screen.
  */
 export function DiaryView({ entries, selectedId, entry, entryLoading, loadError = null, onRetry, actions, now }: Props) {
+  const [announcement, setAnnouncement] = useState("");
   return (
-    <main className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-6 pb-16 md:grid-cols-[13rem_minmax(0,1fr)] lg:grid-cols-[13rem_minmax(0,1fr)_17rem]">
-      <aside aria-label="Entries" className="max-h-72 overflow-y-auto md:row-span-2 md:max-h-none md:overflow-visible">
-        <EntryList entries={entries} selectedId={selectedId} onNewEntry={actions.onNewEntry} {...(now ? { now } : {})} />
-      </aside>
-      {loadError !== null ? (
-        <div className="py-12 text-center text-sm text-muted lg:col-span-2">
-          <p role="alert">{loadError}</p>
-          {onRetry !== undefined && (
-            <button type="button" onClick={onRetry} className={`${SECONDARY_BUTTON} mt-4`}>
-              Try again
-            </button>
-          )}
-        </div>
-      ) : entry !== null ? (
-        // Keyed on the entry, so the draft, the autosave and the mode start fresh for each one —
-        // and leaving an entry unmounts its workspace, which saves anything still pending.
-        <EntryWorkspace key={entry.id} entry={entry} actions={actions} />
-      ) : (
-        <div className="py-12 text-center text-sm text-muted lg:col-span-2">
-          {entryLoading || (selectedId === null && entries === null)
-            ? "Loading…"
-            : selectedId !== null
-              ? "This entry doesn't exist, or belongs to another access code."
-              : entries !== null && entries.length === 0
-                ? "Write a few sentences a day in the language you're learning, and Claude will mark them like a teacher. Start with New entry."
-                : "Choose an entry, or start a new one."}
-        </div>
-      )}
-    </main>
+    <AnnounceContext value={setAnnouncement}>
+      <main className="mx-auto grid max-w-6xl grid-cols-1 gap-6 px-6 pb-16 md:grid-cols-[13rem_minmax(0,1fr)] lg:grid-cols-[13rem_minmax(0,1fr)_17rem]">
+        <aside aria-label="Entries" className="max-h-72 overflow-y-auto md:row-span-2 md:max-h-none md:overflow-visible">
+          <EntryList entries={entries} selectedId={selectedId} onNewEntry={actions.onNewEntry} {...(now ? { now } : {})} />
+        </aside>
+        {loadError !== null ? (
+          <div className="py-12 text-center text-sm text-muted lg:col-span-2">
+            <p role="alert">{loadError}</p>
+            {onRetry !== undefined && (
+              <button type="button" onClick={onRetry} className={`${SECONDARY_BUTTON} mt-4`}>
+                Try again
+              </button>
+            )}
+          </div>
+        ) : entry !== null ? (
+          // Keyed on the entry, so the draft, the autosave and the mode start fresh for each one —
+          // and leaving an entry unmounts its workspace, which saves anything still pending.
+          <EntryWorkspace key={entry.id} entry={entry} actions={actions} />
+        ) : (
+          <div className="py-12 text-center text-sm text-muted lg:col-span-2">
+            {entryLoading || (selectedId === null && entries === null)
+              ? "Loading…"
+              : selectedId !== null
+                ? "This entry doesn't exist, or belongs to another access code."
+                : entries !== null && entries.length === 0
+                  ? "Write a few sentences a day in the language you're learning, and Claude will mark them like a teacher. Start with New entry."
+                  : "Choose an entry, or start a new one."}
+          </div>
+        )}
+        {/* Always mounted, so screen readers announce each change: asking, the answer, a failure. */}
+        <p className="sr-only" role="status" aria-live="polite">
+          {announcement}
+        </p>
+      </main>
+    </AnnounceContext>
   );
 }
 
 /** One entry's editor and side panel, owning its draft and the autosave that keeps it. */
 function EntryWorkspace({ entry, actions }: { entry: DiaryEntry; actions: DiaryActions }) {
-  const [body, setBody] = useState(entry.body);
-  const autosave = useAutosave(body, (text) => actions.onSaveBody(entry.id, text));
+  // A draft the server may not have yet — left here moments ago, its save still out — wins over
+  // the cached body, and counts as unsaved until it lands.
+  const [body, setBody] = useState(() => unsavedDraft(entry.id) ?? entry.body);
+  const autosave = useAutosave(
+    body,
+    async (text) => {
+      const ok = await actions.onSaveBody(entry.id, text);
+      if (ok) draftSaved(entry.id, text);
+      return ok;
+    },
+    undefined,
+    entry.body,
+  );
   const { onChangeLanguages } = actions;
 
   return (
@@ -96,12 +116,19 @@ function EntryWorkspace({ entry, actions }: { entry: DiaryEntry; actions: DiaryA
         <EntryEditor
           entry={entry}
           body={body}
-          onBodyChange={setBody}
+          onBodyChange={(text) => {
+            rememberDraft(entry.id, text);
+            setBody(text);
+          }}
           saveState={autosave.state}
           onRequestFeedback={async (text) => {
             const ok = await actions.onRequestFeedback(entry.id, text);
-            // The review saved this text on its way, so the autosave has nothing left to send.
-            if (ok) autosave.markSaved(text);
+            // The review saved this text on its way, so the autosave has nothing left to send —
+            // unless the learner kept typing meanwhile, which markSaved then sends again.
+            if (ok) {
+              draftSaved(entry.id, text);
+              autosave.markSaved(text);
+            }
             return ok;
           }}
           onChangeLanguages={

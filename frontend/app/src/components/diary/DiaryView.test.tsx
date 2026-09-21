@@ -138,10 +138,37 @@ describe("DiaryView", () => {
     await user.click(within(card).getByRole("button", { name: "Send" }));
 
     expect(onReply).toHaveBeenCalledWith("wrong", "Is it に?");
-    expect(within(card).getByRole("status")).toHaveTextContent("Asking Claude…");
+    expect(screen.getByRole("status")).toHaveTextContent("Asking Claude…");
     expect(box).toHaveValue("Is it に?");
+    // Resolving under a reply still on its way would race it; it waits, as Send does.
+    expect(within(card).getByRole("button", { name: "Resolve" })).toBeDisabled();
     finish(true);
     await waitFor(() => expect(box).toHaveValue(""));
+    expect(screen.getByRole("status")).toHaveTextContent("Reply received.");
+    expect(within(card).getByRole("button", { name: "Resolve" })).toBeEnabled();
+  });
+
+  it("keeps Resolve disabled while a hint is on its way", async () => {
+    let finish: () => void = () => undefined;
+    const onRequestHint = vi.fn(() => new Promise<boolean>((resolve) => (finish = () => resolve(true))));
+    const help = thread({ id: "h1", kind: "HELP", sentence: "How do I say it rained?", hintLevel: 0 });
+    const { user } = renderView(reviewed({ threads: [help] }), actions({ onRequestHint }));
+
+    const panel = screen.getByRole("region", { name: "Help me say…" });
+    await user.click(within(panel).getByRole("button", { name: "Another hint" }));
+
+    expect(within(panel).getByRole("button", { name: "Resolve" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Asking Claude…");
+    finish();
+    await waitFor(() => expect(within(panel).getByRole("button", { name: "Resolve" })).toBeEnabled());
+    expect(screen.getByRole("status")).toHaveTextContent("Hint received.");
+  });
+
+  it("has one live region, mounted empty, for the diary's announcements", () => {
+    renderView(reviewed());
+    const status = screen.getByRole("status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toBeEmptyDOMElement();
   });
 
   it("draws a resolved sentence without its wash, still open to reopening", async () => {
@@ -186,11 +213,78 @@ describe("DiaryView", () => {
     expect(handlers.onRequestFeedback).toHaveBeenCalledWith("new", "山に行きました。");
   });
 
+  it("offers Get feedback only up to the feedback limit, and says why", () => {
+    renderView(entry({ id: "long", body: "あ".repeat(2_001) }));
+
+    expect(screen.getByRole("button", { name: "Get feedback" })).toBeDisabled();
+    expect(screen.getByText(/Feedback works on up to 2,000 characters at a time/)).toHaveTextContent("2,001 / 10,000");
+    expect(screen.getByRole("button", { name: "Get feedback" })).toHaveAccessibleDescription(
+      /Feedback works on up to 2,000 characters/,
+    );
+  });
+
+  it("says when an entry is too long to save at all", () => {
+    renderView(entry({ id: "huge", body: "あ".repeat(10_001) }));
+    expect(screen.getByText(/Too long to save/)).toHaveTextContent("10,001 / 10,000");
+  });
+
+  it("sends again what was typed while a review was out, once the review has saved its own text", async () => {
+    let finishReview: (ok: boolean) => void = () => undefined;
+    const handlers = actions({
+      onRequestFeedback: vi.fn(() => new Promise<boolean>((resolve) => (finishReview = resolve))),
+    });
+    const { user } = renderView(entry({ id: "e1", body: "山に行きました。" }), handlers);
+
+    await user.click(screen.getByRole("button", { name: "Get feedback" }));
+    await user.type(screen.getByLabelText("Diary entry"), "雨でした。");
+    await waitFor(() => expect(handlers.onSaveBody).toHaveBeenCalledWith("e1", "山に行きました。雨でした。"));
+    expect(handlers.onSaveBody).toHaveBeenCalledTimes(1);
+
+    // The review lands after that save, writing the text it was sent over the newer draft.
+    finishReview(true);
+    await waitFor(() => expect(handlers.onSaveBody).toHaveBeenCalledTimes(2));
+    expect(handlers.onSaveBody).toHaveBeenLastCalledWith("e1", "山に行きました。雨でした。");
+  });
+
+  it("comes back to a draft whose save hasn't landed instead of the older cached body", async () => {
+    const saves: Array<(ok: boolean) => void> = [];
+    const onSaveBody = vi.fn(() => new Promise<boolean>((resolve) => saves.push(resolve)));
+    const handlers = actions({ onSaveBody });
+    const first = entry({ id: "e1", body: "朝" });
+    const other = entry({ id: "e2", body: "夜" });
+    const user = userEvent.setup();
+    const view = (selected: DiaryEntry) => (
+      <DiaryView entries={[first, other]} selectedId={selected.id} entry={selected} entryLoading={false} actions={handlers} now={NOW} />
+    );
+    const { rerender } = render(view(first));
+
+    await user.type(screen.getByLabelText("Diary entry"), "ご飯");
+    rerender(view(other));
+    // Leaving saved the draft on the way out; the cache still has the old body.
+    expect(onSaveBody).toHaveBeenCalledWith("e1", "朝ご飯");
+    rerender(view(first));
+
+    expect(screen.getByLabelText("Diary entry")).toHaveValue("朝ご飯");
+    expect(screen.getByText("Saving…")).toBeInTheDocument();
+    saves.forEach((resolve) => resolve(true));
+    await waitFor(() => expect(onSaveBody).toHaveBeenCalledTimes(2));
+    saves.forEach((resolve) => resolve(true));
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(onSaveBody).toHaveBeenLastCalledWith("e1", "朝ご飯");
+  });
+
   it("offers the language pickers only while the entry is empty", () => {
     const onChangeLanguages = vi.fn(async () => undefined);
     renderView(entry({ id: "empty" }), actions({ onChangeLanguages }));
     expect(screen.getByRole("combobox", { name: "Writing in" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Notes in" })).toBeInTheDocument();
+  });
+
+  it("locks the languages once the entry has a thread, even with nothing written", () => {
+    const help = thread({ id: "h1", kind: "HELP", sentence: "How do I say it rained?" });
+    renderView(entry({ id: "asked", threads: [help] }), actions({ onChangeLanguages: vi.fn(async () => undefined) }));
+    expect(screen.queryByRole("combobox", { name: "Writing in" })).not.toBeInTheDocument();
+    expect(screen.getByText("Writing in Japanese · notes in English")).toBeInTheDocument();
   });
 
   it("shows the languages as text once there is writing", () => {

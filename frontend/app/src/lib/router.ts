@@ -12,9 +12,23 @@ export function parseRoute(pathname: string): Route {
   const diary = /^\/diary(?:\/([^/]+))?\/?$/.exec(pathname);
   if (diary !== null) {
     const id = diary[1];
-    return { page: "diary", entryId: id === undefined ? null : decodeURIComponent(id) };
+    return { page: "diary", entryId: id === undefined ? null : decodeSegment(id) };
   }
   return { page: "phrases" };
+}
+
+/**
+ * A path segment as the id it spells. A malformed escape (`/diary/%ZZ`) makes decodeURIComponent
+ * throw, and throwing here would take down the whole render; kept raw, it is just an id no entry
+ * has, which the page already knows how to say.
+ */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch (error) {
+    if (error instanceof URIError) return segment;
+    throw error;
+  }
 }
 
 export function routePath(route: Route): string {

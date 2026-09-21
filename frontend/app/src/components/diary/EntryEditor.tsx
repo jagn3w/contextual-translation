@@ -1,13 +1,14 @@
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import type { Language } from "../../gql/graphql.ts";
 import { codePointLength } from "../../lib/codePoints.ts";
-import { type DiaryEntry, formatDateTime, MAX_BODY_LENGTH } from "../../lib/diary.ts";
+import { type DiaryEntry, formatDateTime, MAX_BODY_LENGTH, MAX_REVIEW_LENGTH } from "../../lib/diary.ts";
 import { languageName, languageTag } from "../../lib/languages.ts";
 import { type SaveState } from "../../lib/useAutosave.ts";
 import { useAutoGrowTextarea } from "../../lib/useAutoGrowTextarea.ts";
 import { askingClaude, useElapsedSeconds } from "../../lib/useElapsedSeconds.ts";
 import { usePending } from "../../lib/usePending.ts";
 import { LanguageSelect } from "../LanguageSelect.tsx";
+import { useAnnounce } from "./announce.ts";
 import { FeedbackView } from "./FeedbackView.tsx";
 import { PRIMARY_BUTTON, SECONDARY_BUTTON, type ThreadActions } from "./ThreadConversation.tsx";
 
@@ -18,7 +19,7 @@ type Props = {
   saveState: SaveState;
   /** Saves `body` and asks for a review; resolves true when the review came back. */
   onRequestFeedback: (body: string) => Promise<boolean>;
-  /** Absent when the languages can't be changed; offered only while the entry is still empty. */
+  /** Absent when the languages can't be changed; offered only while the entry is still untouched. */
   onChangeLanguages?: ((language: Language, notesLanguage: Language) => Promise<unknown>) | undefined;
   /** Deletes the entry; resolves true once it's gone. Asked for only after a confirmation. */
   onDelete: () => Promise<boolean>;
@@ -53,16 +54,36 @@ export function EntryEditor({
   const textareaRef = useAutoGrowTextarea(body);
   const length = codePointLength(body);
   const tooLong = length > MAX_BODY_LENGTH;
-  const canReview = !reviewing && body.trim() !== "" && !tooLong;
-  // Languages are chosen before anything is written: the feedback and the hints are all about
-  // text in one language, so changing it under existing words would make nonsense of them.
-  const changeLanguages = body === "" && entry.reviewedBody === null ? onChangeLanguages : undefined;
+  // Feedback takes less than an entry holds (docs/diary.md): a review of a whole long entry would
+  // be slow, costly and too much to read at once.
+  const tooLongToReview = length > MAX_REVIEW_LENGTH;
+  const canReview = !reviewing && body.trim() !== "" && !tooLongToReview;
+  // Languages are chosen before anything is written or asked: the feedback and the hints are all
+  // about text in one language, so changing it under existing words — or under a help thread's
+  // hints — would make nonsense of them. The server locks the pair on the same terms.
+  const changeLanguages =
+    body === "" && entry.reviewedBody === null && entry.threads.length === 0 ? onChangeLanguages : undefined;
   const reviewedBody = entry.reviewedBody;
+  const announce = useAnnounce();
+  // A review swaps the textarea — which may hold the focus — for the feedback, so the focus goes
+  // to the feedback rather than being dropped on the page. Bumped per review, so each one moves it.
+  const feedbackRef = useRef<HTMLElement>(null);
+  const [reviewsLanded, setReviewsLanded] = useState(0);
+  useEffect(() => {
+    if (reviewsLanded > 0) feedbackRef.current?.focus();
+  }, [reviewsLanded]);
 
   async function requestFeedback() {
     if (!canReview) return;
+    announce("Asking Claude…");
     const ok = await runReview(() => onRequestFeedback(body));
-    if (ok === true) setMode("feedback");
+    if (ok === true) {
+      announce("Feedback ready.");
+      setMode("feedback");
+      setReviewsLanded((count) => count + 1);
+    } else {
+      announce("Couldn't get feedback."); // the toast, with the reason, is announced by sonner
+    }
   }
 
   function handleShortcut(event: KeyboardEvent) {
@@ -129,14 +150,20 @@ export function EntryEditor({
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-muted">{askingClaude(elapsed) ?? "⌘/Ctrl + Enter"}</span>
-          <button type="button" className={PRIMARY_BUTTON} disabled={!canReview} onClick={() => void requestFeedback()}>
+          <button
+            type="button"
+            className={PRIMARY_BUTTON}
+            disabled={!canReview}
+            aria-describedby={tooLongToReview && mode === "write" ? `${bodyId}-limit` : undefined}
+            onClick={() => void requestFeedback()}
+          >
             {reviewing ? "Getting feedback…" : "Get feedback"}
           </button>
         </div>
       </div>
 
       {mode === "feedback" && reviewedBody !== null ? (
-        <FeedbackView entry={{ ...entry, reviewedBody }} body={body} actions={actions} />
+        <FeedbackView ref={feedbackRef} entry={{ ...entry, reviewedBody }} body={body} actions={actions} />
       ) : (
         <div>
           <label htmlFor={bodyId} className="sr-only">
@@ -154,8 +181,10 @@ export function EntryEditor({
           />
           <div className="mt-1.5 flex items-center justify-between gap-3 text-xs">
             <span className={saveState === "error" ? "text-danger" : "text-muted"}>{SAVE_TEXT[saveState]}</span>
-            <span className={tooLong ? "text-danger" : "text-muted"}>
-              {tooLong && "Too long for feedback — "}
+            <span id={`${bodyId}-limit`} className={tooLong ? "text-danger" : "text-muted"}>
+              {tooLong
+                ? "Too long to save — "
+                : tooLongToReview && `Feedback works on up to ${MAX_REVIEW_LENGTH.toLocaleString()} characters at a time — `}
               {length.toLocaleString()} / {MAX_BODY_LENGTH.toLocaleString()}
             </span>
           </div>

@@ -10,10 +10,21 @@ module Diary
     extend T::Sig
     include Tutor
 
-    # A review repeats the entry sentence by sentence (up to 10,000 characters, ~1 token each in
-    # Japanese) and adds a tip per sentence, so it gets the translator's budget; the other
-    # operations return a paragraph at most.
+    # The output budget for a review. The reply repeats the entry sentence by sentence and adds a
+    # verdict and a tip to each, plus up to Prompt::MAX_ENTRY_NOTES notes. Counting a Japanese
+    # character as ~1 token, the worst case is an entry at Service::MAX_REVIEW_LENGTH (2,000
+    # characters) cut into short sentences of ~20 characters:
+    #   2,000 (the sentences echoed) + 100 sentences x (~60 tip + ~15 verdict and JSON keys)
+    #   + 3 x ~100 (notes) ≈ 9,800 tokens
+    # 32,000, the translator's budget, is about three times that, which leaves room for JSON
+    # escaping and kanji that cost more than a token each. It is a ceiling, not a target: the
+    # reply still has to arrive inside the 30 s SDK timeout, and keeping it inside that is
+    # Service::MAX_REVIEW_LENGTH's job, not this number's.
     REVIEW_MAX_TOKENS = 32_000
+    # Replies, hints and topics are a paragraph or two. The longest is a level-4 hint, which writes
+    # out the full sentence for a question of up to Service::MAX_COMMENT_LENGTH (2,000) characters:
+    #   ~2,000 (the sentence, if the question was that long) + ~300 (its explanation) ≈ 2,300 tokens
+    # Three topics with glosses are ~200 tokens, a reply a few hundred.
     SHORT_MAX_TOKENS = 4_000
 
     sig do
@@ -55,9 +66,16 @@ module Diary
       text_field("diary reply", Prompt::REPLY_SYSTEM, Prompt.reply_message(request), Prompt::REPLY_SCHEMA, "reply")
     end
 
-    sig { override.params(request: HintRequest).returns(String) }
+    sig { override.params(request: HintRequest).returns(Hint) }
     def hint(request)
-      text_field("diary hint", Prompt::HINT_SYSTEM, Prompt.hint_message(request), Prompt::HINT_SCHEMA, "hint")
+      fields = ask("diary hint", Prompt::HINT_SYSTEM, Prompt.hint_message(request), Prompt::HINT_SCHEMA,
+        max_tokens: SHORT_MAX_TOKENS)
+      text = fields["hint"]
+      clarifying = fields["clarifying"]
+      unreadable!("no hint") unless text.is_a?(String) && text.present?
+      unreadable!("a hint without its clarifying flag") unless [ true, false ].include?(clarifying)
+
+      Hint.new(text: text.strip, clarifying:)
     end
 
     sig { override.params(request: TopicsRequest).returns(T::Array[Topic]) }

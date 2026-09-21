@@ -16,6 +16,8 @@ module Mutations
       { thread: service.start_help_thread(entry, input.question, session:), errors: [] }
     rescue Translation::Error => e
       { thread: nil, errors: [ e ] }
+    rescue Diary::Service::NotFound => e
+      not_found!(e.message)
     end
   end
 end

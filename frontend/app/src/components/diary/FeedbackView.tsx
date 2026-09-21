@@ -1,4 +1,4 @@
-import { Fragment, useMemo } from "react";
+import { Fragment, type Ref, useMemo } from "react";
 import { type DiaryEntry, type DiaryThread, type DiaryVerdict, feedbackRuns, unplacedSentenceThreads } from "../../lib/diary.ts";
 import { languageTag } from "../../lib/languages.ts";
 import { SentenceHighlight, VerdictBadge } from "./SentenceHighlight.tsx";
@@ -10,6 +10,8 @@ type Props = {
   /** The text in the editor now, which may be ahead of what was reviewed. */
   body: string;
   actions: ThreadActions;
+  /** The view itself, focusable from script: where the focus goes when a review lands. */
+  ref?: Ref<HTMLElement>;
 };
 
 function hasVerdict(thread: DiaryThread): thread is DiaryThread & { verdict: DiaryVerdict } {
@@ -22,7 +24,7 @@ function hasVerdict(thread: DiaryThread): thread is DiaryThread & { verdict: Dia
  * nothing over any other, so when the two differ this says so instead of painting stale highlights
  * over new words.
  */
-export function FeedbackView({ entry, body, actions }: Props) {
+export function FeedbackView({ entry, body, actions, ref }: Props) {
   const runs = useMemo(() => feedbackRuns(entry.reviewedBody, entry.threads), [entry.reviewedBody, entry.threads]);
   const unplaced = useMemo(
     () => unplacedSentenceThreads(entry.reviewedBody, entry.threads).filter(hasVerdict),
@@ -31,7 +33,7 @@ export function FeedbackView({ entry, body, actions }: Props) {
   const edited = body !== entry.reviewedBody;
 
   return (
-    <div>
+    <section ref={ref} tabIndex={-1} aria-label="Claude's feedback" className="outline-none">
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1" aria-label="Legend" role="group">
         {VERDICTS.map((verdict) => (
           <VerdictBadge key={verdict} verdict={verdict} />
@@ -81,6 +83,6 @@ export function FeedbackView({ entry, body, actions }: Props) {
           </ul>
         </section>
       )}
-    </div>
+    </section>
   );
 }

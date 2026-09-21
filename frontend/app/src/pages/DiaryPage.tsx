@@ -18,6 +18,7 @@ import {
   StartDiaryHelpThreadDocument,
   SuggestDiaryTopicsDocument,
 } from "../gql/graphql.ts";
+import { MAX_BODY_LENGTH, MAX_COMMENT_LENGTH, MAX_REVIEW_LENGTH } from "../lib/diary.ts";
 import { failureMessage } from "../lib/failureMessage.ts";
 import { describeRequestError } from "../lib/requestFailure.ts";
 import { navigate, routePath } from "../lib/router.ts";
@@ -64,7 +65,7 @@ function reportFailure(caught: unknown, options: Toast = {}) {
 /**
  * The toast for an anticipated failure — the same codes and words as a translation's, except the
  * three input checks, whose translation wording ("Enter some text to translate.") would misdescribe
- * a diary entry or a question.
+ * a diary entry or a question, and the three that say "translation" about what Claude was asked.
  */
 function reportError(error: DiaryErrorFieldsFragment) {
   toast.error(diaryErrorMessage(error));
@@ -75,9 +76,20 @@ export function diaryErrorMessage(error: DiaryErrorFieldsFragment): string {
     case "EMPTY_INPUT":
       return "Write something first.";
     case "INPUT_TOO_LONG":
-      return "That's over the length limit (10,000 characters for an entry, 2,000 for a question or reply). Shorten it and try again.";
+      // The error doesn't say which limit, so name the three the diary has.
+      return (
+        `That's over the length limit: ${MAX_BODY_LENGTH.toLocaleString()} characters for an entry, ` +
+        `${MAX_REVIEW_LENGTH.toLocaleString()} for feedback at a time, ` +
+        `${MAX_COMMENT_LENGTH.toLocaleString()} for a question or reply. Shorten it and try again.`
+      );
     case "SAME_LANGUAGE":
       return "The language you write in and your notes language must be different.";
+    case "REFUSED":
+      return "Claude declined to answer this. Try rewording it.";
+    case "OUTPUT_TOO_LONG":
+      return "Claude's answer was too long to finish — try a shorter entry or question.";
+    case "TIMEOUT":
+      return "Claude took too long to answer. Try again, or shorten the text.";
     default:
       return translateErrorMessage(error.code, error.retryAfterSeconds ?? null, error.message);
   }

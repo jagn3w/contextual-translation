@@ -53,8 +53,11 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   - every thread from the **most recent round**, resolved ones included, marked as resolved, so it
     has the full context of the feedback it last gave.
 
-  Resolved threads from older rounds are left out. With this context the tutor can say "fixed",
-  notice a repeated mistake, and avoid repeating an entry-wide note that is still open.
+  Resolved threads from older rounds are left out, and so are superseded (`current: false`)
+  sentence threads the learner never commented on: the latest round's feedback replaced them. At
+  most 60 threads are sent, the most recent; the backend logs (as counts only) when it drops any.
+  With this context the tutor can say "fixed", notice a repeated mistake, and avoid repeating an
+  entry-wide note that is still open.
 - Sentence threads from earlier reviews become `current: false` (kept, shown under "Earlier
   feedback"); they are not resolved, because the learner did not resolve them.
 - Highlight spans are offsets into `reviewedBody` (the body as it was reviewed), in Unicode code
@@ -76,7 +79,9 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   (the tense to reach for, the structure that fits, the kind of word missing) so that it genuinely
   moves the learner forward, without writing the sentence for them. **Another hint** gives the next
   one, each more revealing: 1 that broad teacher's hint, 2 key vocabulary, 3 a partial sentence with
-  gaps, 4+ the full sentence with an explanation. `hintLevel` counts general hints given. The
+  gaps, 4+ the full sentence with an explanation. `hintLevel` counts general hints given. A
+  question about what the learner means (see above) is not a hint: a thread that opens with one
+  has `hintLevel` 0, and **Another hint** after one asks for the same level again. The
   learner can also reply with a specific question, which the tutor answers directly.
 
 ## Backend
@@ -99,7 +104,13 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   and is never logged.
 - Every tutor call counts against `Translation::RateLimiter` (the same per-session and per-code
   limits as a translation) and fails with the same typed errors (`TranslateError`).
-- Limits: body 10,000 characters, a comment or question 2,000.
+- Limits: body 10,000 characters, a comment or question 2,000. Feedback works on up to **2,000
+  characters** at a time (`Diary::Service::MAX_REVIEW_LENGTH`, an unmeasured estimate: the review
+  echoes every sentence with a tip, and has to arrive inside the 30 s SDK timeout). A longer body
+  can be saved as a draft, but `reviewDiaryEntry` returns `INPUT_TOO_LONG` in the payload and saves
+  nothing. Output budgets: `ClaudeTutor::REVIEW_MAX_TOKENS` 32,000 (worst case ≈ 9,800 at the
+  review limit), `SHORT_MAX_TOKENS` 4,000 for replies, hints and topics (worst ≈ 2,300); the
+  arithmetic is beside the constants.
 
 ## GraphQL contract
 
@@ -162,11 +173,13 @@ type DiaryTopicsPayload { topics: [DiaryTopic!]! errors: [TranslateError!]! }
 type DeleteDiaryEntryPayload { deletedId: ID }
 ```
 
-An entry's language pair can change only until its first review (afterwards `updateDiaryEntry`
-with a language raises a top-level error, code `INVALID`); a pair of one language twice is a
+An entry's language pair can change only until its first feedback or help thread (once it has
+been reviewed or has any thread, `updateDiaryEntry` with a different language raises a top-level
+error, code `INVALID`); a pair of one language twice is a
 `SAME_LANGUAGE` error in the payload. An entry can be deleted from its header, after a
 confirmation. Bare `/diary` shows a prompt to choose or start an entry.
 
-A missing or foreign id raises a top-level GraphQL error with `extensions.code = "NOT_FOUND"`.
+A missing or foreign id raises a top-level GraphQL error with `extensions.code = "NOT_FOUND"`, and
+so does a tutor mutation whose entry or thread was deleted while the tutor was answering.
 Mutations that call the tutor carry complexity 100, like `translate`, so one request makes at most
 one tutor call.

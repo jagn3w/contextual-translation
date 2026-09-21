@@ -1,5 +1,5 @@
 import { ApolloProvider, useApolloClient, useQuery } from "@apollo/client/react";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { AccessGate } from "./components/AccessGate.tsx";
 import { AppShell } from "./components/AppShell.tsx";
@@ -10,6 +10,8 @@ import { failureMessage } from "./lib/failureMessage.ts";
 import { describeRequestError } from "./lib/requestFailure.ts";
 import { useRoute } from "./lib/router.ts";
 import { signOut } from "./lib/session.ts";
+import { forgetDrafts } from "./lib/unsavedDrafts.ts";
+import { flushAutosaves } from "./lib/useAutosave.ts";
 import { DiaryPage } from "./pages/DiaryPage.tsx";
 import { TranslatePage } from "./pages/TranslatePage.tsx";
 
@@ -24,16 +26,22 @@ type Props = {
 export function App({ createClient = createApolloClient }: Props) {
   const [epoch, setEpoch] = useState(0);
   const [sessionEnded, setSessionEnded] = useState(false);
+  // Set by a deliberate sign-out until the next sign-in. A request still out when the session was
+  // deleted comes back unauthenticated, and that is no news to someone who just signed out: it must
+  // not replace the gate with "Your session ended".
+  const signedOut = useRef(false);
   const [client] = useState(() =>
     createClient({
       onUnauthenticated: () => {
+        if (signedOut.current) return;
         setSessionEnded(true);
         setEpoch((value) => value + 1);
       },
     }),
   );
-  const restart = useCallback((ended: boolean) => {
-    setSessionEnded(ended);
+  const restart = useCallback((reason: "signedIn" | "signedOut") => {
+    signedOut.current = reason === "signedOut";
+    setSessionEnded(false);
     setEpoch((value) => value + 1);
   }, []);
 
@@ -47,7 +55,7 @@ export function App({ createClient = createApolloClient }: Props) {
 
 type BoundaryProps = {
   sessionEnded: boolean;
-  onRestart: (sessionEnded: boolean) => void;
+  onRestart: (reason: "signedIn" | "signedOut") => void;
 };
 
 /** Restores the session on load via the Viewer query (design D4.2) and routes to the gate or the app. */
@@ -56,14 +64,18 @@ function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
   const { data, error, loading, refetch } = useQuery(ViewerDocument, { fetchPolicy: "network-only" });
 
   const handleSignOut = useCallback(async () => {
+    // Diary drafts still waiting on their autosave go first: sent after the session is deleted,
+    // they would be refused and lost.
+    await flushAutosaves();
     const result = await signOut();
     if (!result.ok) {
       // The session cookie is still valid; staying put is the honest outcome.
       toast.error(`Couldn't sign out. ${failureMessage(result.reason)}`);
       return;
     }
+    forgetDrafts();
     await client.clearStore();
-    onRestart(false);
+    onRestart("signedOut");
   }, [client, onRestart]);
 
   if (error) {
@@ -72,7 +84,7 @@ function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
       return (
         <AccessGate
           notice={sessionEnded ? failureMessage(failure) : undefined}
-          onSignedIn={() => onRestart(false)}
+          onSignedIn={() => onRestart("signedIn")}
         />
       );
     }
