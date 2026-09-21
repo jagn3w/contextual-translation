@@ -7,14 +7,13 @@ import { GlossedWord } from "../components/GlossedWord.tsx";
 import { LanguageSelect } from "../components/LanguageSelect.tsx";
 import { type GlossLevel, type Language, TranslateDocument, type TranslateMutation } from "../gql/graphql.ts";
 import { annotateTranslation, type Gloss, type RubyPart } from "../lib/annotateTranslation.ts";
+import { codePointLength } from "../lib/codePoints.ts";
 import { failureMessage } from "../lib/failureMessage.ts";
 import { describeRequestError } from "../lib/requestFailure.ts";
 import { translateErrorMessage } from "../lib/translateErrorMessage.ts";
+import { MAX_CONTEXT_LENGTH, MAX_SOURCE_LENGTH } from "../lib/translateLimits.ts";
 import { useAutoGrowTextarea } from "../lib/useAutoGrowTextarea.ts";
-
-type Props = {
-  onSignOut: () => void;
-};
+import { askingClaude, useElapsedSeconds } from "../lib/useElapsedSeconds.ts";
 
 /** A translation plus the inputs it was made from, so the page can tell when it's out of date. */
 type Translation = NonNullable<TranslateMutation["translate"]["translation"]> & {
@@ -90,13 +89,6 @@ function withBuffer(buffers: Buffers, language: Language, buffer: LanguageBuffer
 let toastCounter = 0;
 
 
-/** Length in Unicode code points — how the backend (Ruby String#length) counts the limits. */
-export function codePointLength(text: string): number {
-  let count = 0;
-  for (const _ of text) count += 1;
-  return count;
-}
-
 /** A response with nothing to gloss, with a stable identity so the annotation memo holds. */
 const NO_GLOSSES: readonly Gloss[] = [];
 
@@ -138,32 +130,12 @@ function rubyParts(parts: readonly RubyPart[]) {
   );
 }
 
-/** Seconds since `active` became true, ticking once a second; null when inactive. */
-function useElapsedSeconds(active: boolean): number | null {
-  const [elapsed, setElapsed] = useState<number | null>(null);
-  const started = useRef(0);
-  useEffect(() => {
-    if (!active) {
-      setElapsed(null);
-      return;
-    }
-    started.current = Date.now();
-    setElapsed(0);
-    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started.current) / 1000)), 1000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return elapsed;
-}
-
-export const MAX_SOURCE_LENGTH = 10_000;
-export const MAX_CONTEXT_LENGTH = 2_000;
-
 /**
  * The translation workspace (design MVP, D1.4): the source pane (editable) and target pane
  * (read-only) side by side like Google Translate, each with a language picker and a swap button
  * between them; the context field and the Update Translation button below.
  */
-export function TranslatePage({ onSignOut }: Props) {
+export function TranslatePage() {
   const sourceId = useId();
   const contextId = useId();
   const [sourceLanguage, setSourceLanguage] = useState<Language>("EN");
@@ -483,181 +455,168 @@ export function TranslatePage({ onSignOut }: Props) {
     // One provider for every glossed word, with a short delay: the definitions are meant to be
     // skimmed while reading, so a tooltip that waits feels broken (design D2.3).
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
-      <div className="min-h-screen bg-canvas text-ink">
-        <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <h1 className="text-base font-semibold tracking-tight">Contextual Translate</h1>
+      <main className="mx-auto max-w-6xl px-6 pb-16" onKeyDown={handleShortcut}>
+        <section className="overflow-hidden rounded-xl border border-line" aria-label="Translation">
+          {/* One row at every width, phones included: minmax(0,1fr) lets the two picker cells
+              shrink past their text (a bare 1fr floors at its content and would overflow ~360px),
+              and the equal side columns leave the swap button dead centre between them. */}
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] border-b border-line">
+            <div className="flex min-w-0 items-center px-3 py-2">
+              <LanguageSelect label="Source language" value={sourceLanguage} onChange={chooseSource} />
+            </div>
+            <div className="flex items-center justify-center px-2">
+              <button
+                type="button"
+                onClick={swap}
+                disabled={loading}
+                aria-label="Swap languages"
+                title="Swap languages"
+                className="focus-ring rounded-full p-2 text-muted hover:bg-surface hover:text-ink disabled:opacity-40"
+              >
+                ⇄
+              </button>
+            </div>
+            <div className="flex min-w-0 items-center px-3 py-2">
+              <LanguageSelect label="Target language" value={targetLanguage} onChange={chooseTarget} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-line">
+            <div className="relative">
+              <label htmlFor={sourceId} className="sr-only">
+                Text to translate
+              </label>
+              <textarea
+                id={sourceId}
+                ref={sourceRef}
+                value={sourceText}
+                onChange={(event) => editSource(event.target.value)}
+                aria-invalid={sourceTooLong}
+                placeholder="Type or paste text…"
+                // The pane grows with the text (design D1.4) but stops at roughly two thirds of
+                // the viewport and scrolls from there, so the gloss picker, the counter and Update
+                // Translation below it stay on screen. A 10,000-character paste is inside the
+                // limit and would otherwise put them ~10,000px down — and past the limit the
+                // button is disabled with the only explanation ("Too long to translate — …")
+                // down there with it. The hook reads this number off the element rather than
+                // holding its own copy, so the ceiling lives here with the rest of the layout.
+                className="focus-ring block max-h-[65vh] min-h-72 w-full resize-none overflow-hidden bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60"
+              />
+              {/* The request's two quiet settings live where the text is typed: the picker on the
+                  left, the count keeping its right edge. */}
+              <div className="flex items-center justify-between gap-3 px-5 pb-3">
+                <GlossLevelSelect value={glossLevel} onChange={setGlossLevel} />
+                <p className={`text-right text-xs ${sourceTooLong ? "text-danger" : "text-muted"}`}>
+                  {sourceTooLong && "Too long to translate — "}
+                  {sourceLength.toLocaleString()} / {MAX_SOURCE_LENGTH.toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            {/* Out of date is said by the ground and by a marker, never by dimming the ink: a
+                blanket opacity over the darkened frame composited the translation to 3.5:1,
+                under WCAG AA. On bg-frame-stale the text is unchanged at 9.6:1 (design D1.4). */}
+            <div
+              className={`min-h-72 border-t border-line px-5 py-4 md:border-t-0 ${stale ? "bg-frame-stale" : "bg-frame"}`}
+              aria-label="Translation result"
+              aria-busy={loading}
+              role="region"
+            >
+              {loading ? (
+                // bg-line would vanish against the frame; a wash of ink keeps the bars readable there.
+                <div className="space-y-3" aria-hidden>
+                  <div className="h-5 w-3/4 animate-pulse rounded bg-ink/10" />
+                  <div className="h-5 w-1/2 animate-pulse rounded bg-ink/10" />
+                  <div className="h-5 w-2/3 animate-pulse rounded bg-ink/10" />
+                </div>
+              ) : resultText === "" ? (
+                <p className="text-lg text-frame-muted">Translation</p>
+              ) : (
+                <>
+                  {stale && (
+                    // Named, not merely shaded: the tint alone is easy to miss, and "the text is
+                    // greyed out" is exactly the misreading the old blanket opacity invited.
+                    <p className="mb-2 text-xs font-medium uppercase tracking-wide text-frame-muted">Out of date</p>
+                  )}
+                  {/* Ruby needs room above each line for the readings, so annotated text gets
+                      looser leading than the plain paragraph, which keeps its usual rhythm. */}
+                  <p className={`whitespace-pre-wrap text-lg ${responseFurigana === null ? "leading-relaxed" : "leading-loose"}`}>
+                    {annotated === null
+                      ? resultText
+                      : annotated.map((run, index) =>
+                          run.gloss === undefined ? (
+                            // Runs are a pure function of one response, so the index is stable.
+                            <Fragment key={index}>{rubyParts(run.parts)}</Fragment>
+                          ) : (
+                            <GlossedWord key={index} gloss={run.gloss}>
+                              {rubyParts(run.parts)}
+                            </GlossedWord>
+                          ),
+                        )}
+                  </p>
+                  {/* What ran out for the definitions is a fixed cap on how many one answer may
+                      carry, not room in the answer and not the length of the translation, so the
+                      message says how many arrived and stops there. The number is counted from
+                      the response in hand rather than copied from the backend's cap, which would
+                      be a second constant on this side of the boundary, free to drift. */}
+                  {shortfalls.length > 0 && (
+                    <p className="mt-4 text-xs text-frame-muted">{shortfalls.join(" ")}</p>
+                  )}
+                  {responseNotes && (
+                    <p className="mt-4 border-t border-ink/10 pt-3 text-sm text-frame-muted">
+                      <span className="font-medium text-ink/80">Note: </span>
+                      {responseNotes}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <div className="mt-6">
+          <label htmlFor={contextId} className="block text-sm font-medium">
+            Context
+          </label>
+          <p className="mt-0.5 text-sm text-muted">
+            Where are you, and who are you talking to? E.g. "At a baseball game" or "An email to my new manager in
+            Madrid".
+          </p>
+          <textarea
+            id={contextId}
+            ref={contextRef}
+            value={context}
+            onChange={(event) => setContext(event.target.value)}
+            aria-invalid={contextTooLong}
+            rows={3}
+            placeholder="Describe the situation, formality or region…"
+            className="mt-2 block min-h-24 w-full resize-none overflow-hidden rounded-lg border border-line bg-canvas px-4 py-3 text-sm leading-relaxed placeholder:text-muted/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
+          />
+          {contextTooLong && (
+            <p className="mt-1 text-xs text-danger">
+              Context is too long — {contextLength.toLocaleString()} / {MAX_CONTEXT_LENGTH.toLocaleString()} characters.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-6 flex items-center gap-3">
           <button
             type="button"
-            onClick={onSignOut}
-            className="rounded-md px-2 py-1 text-sm text-muted hover:bg-surface hover:text-ink"
+            onClick={() => void runTranslation()}
+            disabled={!canTranslate}
+            className="focus-ring rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Sign out
+            {loading ? "Translating…" : "Update Translation"}
           </button>
-        </header>
-
-        <main className="mx-auto max-w-6xl px-6 pb-16" onKeyDown={handleShortcut}>
-          <section className="overflow-hidden rounded-xl border border-line" aria-label="Translation">
-            {/* One row at every width, phones included: minmax(0,1fr) lets the two picker cells
-                shrink past their text (a bare 1fr floors at its content and would overflow ~360px),
-                and the equal side columns leave the swap button dead centre between them. */}
-            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] border-b border-line">
-              <div className="flex min-w-0 items-center px-3 py-2">
-                <LanguageSelect label="Source language" value={sourceLanguage} onChange={chooseSource} />
-              </div>
-              <div className="flex items-center justify-center px-2">
-                <button
-                  type="button"
-                  onClick={swap}
-                  disabled={loading}
-                  aria-label="Swap languages"
-                  title="Swap languages"
-                  className="focus-ring rounded-full p-2 text-muted hover:bg-surface hover:text-ink disabled:opacity-40"
-                >
-                  ⇄
-                </button>
-              </div>
-              <div className="flex min-w-0 items-center px-3 py-2">
-                <LanguageSelect label="Target language" value={targetLanguage} onChange={chooseTarget} />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-line">
-              <div className="relative">
-                <label htmlFor={sourceId} className="sr-only">
-                  Text to translate
-                </label>
-                <textarea
-                  id={sourceId}
-                  ref={sourceRef}
-                  value={sourceText}
-                  onChange={(event) => editSource(event.target.value)}
-                  aria-invalid={sourceTooLong}
-                  placeholder="Type or paste text…"
-                  // The pane grows with the text (design D1.4) but stops at roughly two thirds of
-                  // the viewport and scrolls from there, so the gloss picker, the counter and Update
-                  // Translation below it stay on screen. A 10,000-character paste is inside the
-                  // limit and would otherwise put them ~10,000px down — and past the limit the
-                  // button is disabled with the only explanation ("Too long to translate — …")
-                  // down there with it. The hook reads this number off the element rather than
-                  // holding its own copy, so the ceiling lives here with the rest of the layout.
-                  className="focus-ring block max-h-[65vh] min-h-72 w-full resize-none overflow-hidden bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60"
-                />
-                {/* The request's two quiet settings live where the text is typed: the picker on the
-                    left, the count keeping its right edge. */}
-                <div className="flex items-center justify-between gap-3 px-5 pb-3">
-                  <GlossLevelSelect value={glossLevel} onChange={setGlossLevel} />
-                  <p className={`text-right text-xs ${sourceTooLong ? "text-danger" : "text-muted"}`}>
-                    {sourceTooLong && "Too long to translate — "}
-                    {sourceLength.toLocaleString()} / {MAX_SOURCE_LENGTH.toLocaleString()}
-                  </p>
-                </div>
-              </div>
-
-              {/* Out of date is said by the ground and by a marker, never by dimming the ink: a
-                  blanket opacity over the darkened frame composited the translation to 3.5:1,
-                  under WCAG AA. On bg-frame-stale the text is unchanged at 9.6:1 (design D1.4). */}
-              <div
-                className={`min-h-72 border-t border-line px-5 py-4 md:border-t-0 ${stale ? "bg-frame-stale" : "bg-frame"}`}
-                aria-label="Translation result"
-                aria-busy={loading}
-                role="region"
-              >
-                {loading ? (
-                  // bg-line would vanish against the frame; a wash of ink keeps the bars readable there.
-                  <div className="space-y-3" aria-hidden>
-                    <div className="h-5 w-3/4 animate-pulse rounded bg-ink/10" />
-                    <div className="h-5 w-1/2 animate-pulse rounded bg-ink/10" />
-                    <div className="h-5 w-2/3 animate-pulse rounded bg-ink/10" />
-                  </div>
-                ) : resultText === "" ? (
-                  <p className="text-lg text-frame-muted">Translation</p>
-                ) : (
-                  <>
-                    {stale && (
-                      // Named, not merely shaded: the tint alone is easy to miss, and "the text is
-                      // greyed out" is exactly the misreading the old blanket opacity invited.
-                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-frame-muted">Out of date</p>
-                    )}
-                    {/* Ruby needs room above each line for the readings, so annotated text gets
-                        looser leading than the plain paragraph, which keeps its usual rhythm. */}
-                    <p className={`whitespace-pre-wrap text-lg ${responseFurigana === null ? "leading-relaxed" : "leading-loose"}`}>
-                      {annotated === null
-                        ? resultText
-                        : annotated.map((run, index) =>
-                            run.gloss === undefined ? (
-                              // Runs are a pure function of one response, so the index is stable.
-                              <Fragment key={index}>{rubyParts(run.parts)}</Fragment>
-                            ) : (
-                              <GlossedWord key={index} gloss={run.gloss}>
-                                {rubyParts(run.parts)}
-                              </GlossedWord>
-                            ),
-                          )}
-                    </p>
-                    {/* What ran out for the definitions is a fixed cap on how many one answer may
-                        carry, not room in the answer and not the length of the translation, so the
-                        message says how many arrived and stops there. The number is counted from
-                        the response in hand rather than copied from the backend's cap, which would
-                        be a second constant on this side of the boundary, free to drift. */}
-                    {shortfalls.length > 0 && (
-                      <p className="mt-4 text-xs text-frame-muted">{shortfalls.join(" ")}</p>
-                    )}
-                    {responseNotes && (
-                      <p className="mt-4 border-t border-ink/10 pt-3 text-sm text-frame-muted">
-                        <span className="font-medium text-ink/80">Note: </span>
-                        {responseNotes}
-                      </p>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <div className="mt-6">
-            <label htmlFor={contextId} className="block text-sm font-medium">
-              Context
-            </label>
-            <p className="mt-0.5 text-sm text-muted">
-              Where are you, and who are you talking to? E.g. "At a baseball game" or "An email to my new manager in
-              Madrid".
-            </p>
-            <textarea
-              id={contextId}
-              ref={contextRef}
-              value={context}
-              onChange={(event) => setContext(event.target.value)}
-              aria-invalid={contextTooLong}
-              rows={3}
-              placeholder="Describe the situation, formality or region…"
-              className="mt-2 block min-h-24 w-full resize-none overflow-hidden rounded-lg border border-line bg-canvas px-4 py-3 text-sm leading-relaxed placeholder:text-muted/60 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
-            />
-            {contextTooLong && (
-              <p className="mt-1 text-xs text-danger">
-                Context is too long — {contextLength.toLocaleString()} / {MAX_CONTEXT_LENGTH.toLocaleString()} characters.
-              </p>
-            )}
-          </div>
-
-          <div className="mt-6 flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => void runTranslation()}
-              disabled={!canTranslate}
-              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {loading ? "Translating…" : "Update Translation"}
-            </button>
-            <span className="text-xs text-muted">
-              {elapsed !== null && elapsed >= 2 ? `Asking Claude… ${elapsed}s` : "⌘/Ctrl + Enter"}
-            </span>
-            {/* Always mounted, so screen readers announce each change: start, result or failure. */}
-            <span className="sr-only" role="status" aria-live="polite">
-              {announcement}
-            </span>
-          </div>
-        </main>
-      </div>
+          <span className="text-xs text-muted">
+            {askingClaude(elapsed) ?? "⌘/Ctrl + Enter"}
+          </span>
+          {/* Always mounted, so screen readers announce each change: start, result or failure. */}
+          <span className="sr-only" role="status" aria-live="polite">
+            {announcement}
+          </span>
+        </div>
+      </main>
     </Tooltip.Provider>
   );
 }

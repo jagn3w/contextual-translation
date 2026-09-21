@@ -3,7 +3,8 @@
 
 module Translation
   # Maps failures from the Anthropic SDK (and, for Workload Identity Federation, AWS STS) to our
-  # error codes, in one place (design D2.4, D3.3). Returns nil for anything unanticipated — the
+  # error codes, in one place (design D2.4, D3.3). Translations and diary tutor calls both come
+  # through here, so the messages name neither feature. Returns nil for anything unanticipated — the
   # caller re-raises those as unexpected errors.
   module ClaudeErrorMapper
     extend T::Sig
@@ -41,7 +42,7 @@ module Translation
         status = error.context&.http_response&.status_code.to_i
         TRANSIENT_STS_CODES.include?(error.code) || status >= 500 ? unreachable : misconfigured
       when Anthropic::Errors::APITimeoutError # before APIConnectionError: it's a subclass
-        Error.new(ErrorCode::TIMEOUT, "The translation took too long.")
+        Error.new(ErrorCode::TIMEOUT, "Claude took too long to respond.")
       when Anthropic::Errors::APIConnectionError
         Error.new(ErrorCode::UPSTREAM_UNREACHABLE, "Couldn't reach Claude.")
       when Anthropic::Errors::RateLimitError
@@ -73,7 +74,7 @@ module Translation
 
     sig { returns(Error) }
     def self.misconfigured
-      Error.new(ErrorCode::SERVICE_MISCONFIGURED, "The translation service isn't configured correctly.")
+      Error.new(ErrorCode::SERVICE_MISCONFIGURED, "The server's connection to Claude isn't configured correctly.")
     end
 
     sig { returns(Error) }

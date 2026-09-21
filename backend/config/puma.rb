@@ -25,13 +25,19 @@
 # Any libraries that use a connection pool or another resource pool should
 # be configured to provide at least as many connections as the number of
 # threads. This includes Active Record's `pool` parameter in `database.yml`.
-# A translation holds its thread for the whole Claude call (seconds), so allow more concurrent
-# requests than Rails' default of 3 (design D5.3). database.yml sizes the pool to match.
+# A Claude call (a translation or a diary tutor call) holds its thread for seconds, so allow more
+# concurrent requests than Rails' default of 3 (design D5.3). database.yml sizes the pool to match.
 threads_count = ENV.fetch("RAILS_MAX_THREADS", 8)
 threads threads_count, threads_count
 
 # Specifies the `port` that Puma will listen on to receive requests; default is 3000.
 port ENV.fetch("PORT", 3000)
+
+# Puma refuses a body over this with a 413 before buffering it. That matters for chunked bodies:
+# Puma decodes them itself, buffering to disk with no bound, and hands Rails an ordinary
+# Content-Length request, so Rails' own check (RequestSizeLimit::MAX_BODY_BYTES, the same 64 KB)
+# would only see one after it had been read in full.
+http_content_length_limit 64 * 1024
 
 # Allow puma to be restarted by `bin/rails restart` command.
 plugin :tmp_restart
@@ -41,8 +47,9 @@ plugin :tmp_restart
 pidfile ENV["PIDFILE"] if ENV["PIDFILE"]
 
 # Start background work that needs the booted app: the Claude WIF token refresher fetches a
-# token now and keeps it fresh, so translations never wait on it (design D5.2). This assumes
-# single mode; with workers, each starts its refresher on its first translation instead.
+# token now and keeps it fresh, so Claude calls never wait on it (design D5.2). This assumes
+# single mode; with workers, each starts its refresher on its first Claude call of any kind. The
+# diary tutor shares the translator's client (Claude.client), so this warms its refresher too.
 after_booted do
   if defined?(Rails) && Rails.env.production?
     translator = Translation.translator

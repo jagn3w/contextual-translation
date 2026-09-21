@@ -16,7 +16,7 @@ module Claude
   #   threads, so it must be instant. It hands out copies the cache sees as already expired,
   #   so the cache calls it on every request, on the request's own thread. That way the SDK
   #   always sends the current token, and `call` knows which one each request sent.
-  # - `await_token`, which ClaudeTranslator calls before each Claude request, waits a bounded
+  # - `await_token`, which Claude::MessageCaller calls before each Claude request, waits a bounded
   #   time for a usable token, or for a newer one than the token a 401 rejected.
   class TokenRefresher
     extend T::Sig

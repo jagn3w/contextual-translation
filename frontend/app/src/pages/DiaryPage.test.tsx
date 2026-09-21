@@ -1,0 +1,607 @@
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ApolloClient } from "@apollo/client";
+import { App } from "../App.tsx";
+import { createApolloClient } from "../lib/apollo.ts";
+import { unsavedDraft } from "../lib/unsavedDrafts.ts";
+import { diaryErrorMessage } from "./DiaryPage.tsx";
+import { entry, localIso } from "../test/diaryFixtures.ts";
+import { type FakeDiary, installFakeDiary } from "../test/fakeDiary.ts";
+import { type FakeServer, installFakeServer, json, unauthenticated, viewer } from "../test/fakeServer.ts";
+import type { TranslateErrorCode } from "../gql/graphql.ts";
+import type { DiaryEntry } from "../lib/diary.ts";
+
+let server: FakeServer;
+
+async function openDiary(path: string, initial: DiaryEntry[] = []): Promise<{ user: ReturnType<typeof userEvent.setup>; diary: FakeDiary }> {
+  window.history.replaceState(null, "", path);
+  server.onGraphql("Viewer", () => viewer());
+  const diary = installFakeDiary(server, initial);
+  const user = userEvent.setup();
+  render(<App />);
+  await screen.findByRole("button", { name: "New entry" });
+  return { user, diary };
+}
+
+function list() {
+  return within(screen.getByRole("navigation", { name: "Diary entries" }));
+}
+
+function requestsFor(operation: string) {
+  return server.requests.filter((request) => request.body["operationName"] === operation);
+}
+
+function variablesOf(operation: string, index = -1) {
+  return (requestsFor(operation).at(index)?.body["variables"] as { input: Record<string, unknown> }).input;
+}
+
+/** Picks from a Radix Select by keyboard (jsdom can't fire its pointer events). */
+async function pick(user: ReturnType<typeof userEvent.setup>, picker: string, name: RegExp) {
+  screen.getByRole("combobox", { name: picker }).focus();
+  await user.keyboard("{ArrowDown}");
+  const option = await screen.findByRole("option", { name });
+  option.focus();
+  await user.keyboard("{Enter}");
+}
+
+/** Writes a fresh entry and asks for feedback, leaving the page on its Feedback view. */
+async function writeAndReview(user: ReturnType<typeof userEvent.setup>, text = "山を行きました。楽しかったです。") {
+  await user.click(screen.getByRole("button", { name: "New entry" }));
+  await user.type(await screen.findByLabelText("Diary entry"), text);
+  await user.click(screen.getByRole("button", { name: "Get feedback" }));
+  await screen.findByRole("button", { name: /^Needs fixing:/ });
+}
+
+const MORNING_ID = "3e7a9c12-5b4d-4f8e-a6c1-0d2b4f6e8a97";
+const EVENING_ID = "b82f5d0c-9a3e-4c71-8e5b-1f4a7c9d2e60";
+/** An entry's URL: the id is a random UUID, as the server issues. */
+const ENTRY_PATH = /^\/diary\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const MORNING = entry({
+  id: MORNING_ID,
+  body: "朝ご飯を食べました。",
+  preview: "朝ご飯を食べました。",
+  createdAt: localIso(2026, 9, 20, 8, 0),
+});
+const EVENING = entry({
+  id: EVENING_ID,
+  language: "ES",
+  notesLanguage: "EN",
+  body: "Hoy fui al cine.",
+  preview: "Hoy fui al cine.",
+  createdAt: localIso(2026, 9, 20, 21, 0),
+});
+
+beforeEach(() => {
+  server = installFakeServer();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  window.history.replaceState(null, "", "/");
+});
+
+describe("DiaryPage", () => {
+  it("lists the entries and opens one from the list", async () => {
+    const { user } = await openDiary("/diary", [EVENING, MORNING]);
+
+    expect(await screen.findByText("Choose an entry, or start a new one.")).toBeInTheDocument();
+    const links = await list().findAllByRole("link");
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([`/diary/${EVENING_ID}`, `/diary/${MORNING_ID}`]);
+
+    await user.click(list().getByRole("link", { name: /朝ご飯/ }));
+
+    expect(window.location.pathname).toBe(`/diary/${MORNING_ID}`);
+    expect(await screen.findByLabelText("Diary entry")).toHaveValue("朝ご飯を食べました。");
+    expect(list().getByRole("link", { name: /朝ご飯/ })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("creates a new entry in the most recent entry's language pair", async () => {
+    const { user } = await openDiary("/diary", [EVENING, MORNING]);
+    await list().findAllByRole("link");
+
+    await user.click(screen.getByRole("button", { name: "New entry" }));
+
+    await waitFor(() => expect(window.location.pathname).toMatch(ENTRY_PATH));
+    expect(variablesOf("CreateDiaryEntry")).toEqual({ language: "ES", notesLanguage: "EN" });
+    expect(await screen.findByRole("combobox", { name: "Writing in" })).toHaveTextContent("Spanish");
+    expect(list().getAllByRole("link")).toHaveLength(3);
+    expect(list().getAllByRole("link")[0]).toHaveAttribute("aria-current", "page");
+  });
+
+  it("starts a first entry in Japanese with English notes", async () => {
+    const { user } = await openDiary("/diary");
+    expect(await screen.findByText(/No entries yet/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "New entry" }));
+
+    await screen.findByLabelText("Diary entry");
+    expect(variablesOf("CreateDiaryEntry")).toEqual({ language: "JA", notesLanguage: "EN" });
+  });
+
+  it("autosaves as the learner writes and updates the list's preview", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+
+    const box = await screen.findByLabelText("Diary entry");
+    await user.type(box, "美味しかったです。");
+
+    expect(await screen.findByText("Saved", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(variablesOf("SaveDiaryEntry")).toEqual({ id: MORNING_ID, body: "朝ご飯を食べました。美味しかったです。" });
+    expect(list().getByRole("link", { name: /美味しかったです/ })).toBeInTheDocument();
+  });
+
+  it("cuts a long entry's preview at twelve words, as the server does", async () => {
+    const empty = entry({ language: "ES", notesLanguage: "EN", body: "", preview: "" });
+    const { user } = await openDiary(`/diary/${empty.id}`, [empty]);
+
+    await user.click(await screen.findByLabelText("Diary entry"));
+    await user.paste("uno dos tres cuatro cinco seis siete ocho nueve diez once doce trece catorce");
+
+    expect(await screen.findByText("Saved", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(list().getByRole("link", { name: /uno dos/ })).toHaveTextContent(
+      "uno dos tres cuatro cinco seis siete ocho nueve diez once doce…",
+    );
+  });
+
+  it("gets feedback and draws each sentence's verdict, with the entry's notes beside it", async () => {
+    const { user } = await openDiary("/diary");
+
+    await writeAndReview(user);
+
+    expect(screen.getByRole("button", { name: "Needs fixing: 山を行きました。" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Natural: 楽しかったです。" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Feedback" })).toHaveAttribute("aria-pressed", "true");
+    const notes = screen.getByRole("region", { name: "Notes on this entry" });
+    expect(within(notes).getByText("Watch your particles")).toBeInTheDocument();
+    expect(variablesOf("ReviewDiaryEntry")).toMatchObject({ body: "山を行きました。楽しかったです。" });
+  });
+
+  it("asks a follow-up on a sentence and shows Claude's answer in its card", async () => {
+    const { user } = await openDiary("/diary");
+    await writeAndReview(user);
+
+    await user.click(screen.getByRole("button", { name: /^Needs fixing:/ }));
+    const card = await screen.findByRole("dialog", { name: "Feedback: Needs fixing" });
+    expect(within(card).getByText("Tip for: 山を行きました。")).toBeInTheDocument();
+    await user.type(within(card).getByLabelText("Ask a question about this"), "Should it be に?");
+    await user.click(within(card).getByRole("button", { name: "Send" }));
+
+    expect(await within(card).findByText("Answer to: Should it be に?")).toBeInTheDocument();
+    expect(within(card).getByText("Should it be に?")).toBeInTheDocument();
+    expect(within(card).getByLabelText("Ask a question about this")).toHaveValue("");
+  });
+
+  it("resolves a sentence, taking its highlight away", async () => {
+    const { user } = await openDiary("/diary");
+    await writeAndReview(user);
+
+    await user.click(screen.getByRole("button", { name: /^Needs fixing:/ }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Resolve" }));
+
+    const resolved = await screen.findByRole("button", { name: "Needs fixing, resolved: 山を行きました。" });
+    expect(resolved).not.toHaveClass("bg-verdict-wrong");
+    expect(variablesOf("ResolveDiaryThread")).toEqual({ threadId: expect.any(String), resolved: true });
+  });
+
+  it("opens a help thread and asks for another hint", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    const panel = await screen.findByRole("region", { name: "Help me say…" });
+
+    await user.type(within(panel).getByLabelText(/What do you want to say\?/), "How do I say I went hiking?");
+    await user.click(within(panel).getByRole("button", { name: "Ask" }));
+
+    expect(await within(panel).findByText("Hint 1: think about the past tense.")).toBeInTheDocument();
+    expect(within(panel).getByText("How do I say I went hiking?")).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Another hint" }));
+    expect(await within(panel).findByText("Hint 2: key vocabulary.")).toBeInTheDocument();
+  });
+
+  it("asks what an ambiguous question means before the first hint, which is still to come", async () => {
+    const { user, diary } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    const panel = await screen.findByRole("region", { name: "Help me say…" });
+
+    await user.type(within(panel).getByLabelText(/What do you want to say\?/), "How do I say I want a hamburger?");
+    await user.click(within(panel).getByRole("button", { name: "Ask" }));
+
+    expect(await within(panel).findByText("Which do you mean? (for: How do I say I want a hamburger?)")).toBeInTheDocument();
+    expect(diary.find(MORNING_ID)?.threads[0]?.hintLevel).toBe(0);
+    await user.click(within(panel).getByRole("button", { name: "Another hint" }));
+    expect(await within(panel).findByText("Hint 1: think about the past tense.")).toBeInTheDocument();
+    expect(diary.find(MORNING_ID)?.threads[0]?.hintLevel).toBe(1);
+  });
+
+  it("suggests ideas in the entry's languages, following on from what is written", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+
+    await user.click(await screen.findByRole("button", { name: "Get ideas" }));
+
+    expect(await screen.findByText("週末に何をしましたか？")).toBeInTheDocument();
+    expect(screen.getByText("What did you do at the weekend?")).toBeInTheDocument();
+    expect(variablesOf("SuggestDiaryTopics")).toEqual({ language: "JA", notesLanguage: "EN", body: "朝ご飯を食べました。" });
+  });
+
+  it("sends the unsaved draft for ideas, and no body for an empty entry", async () => {
+    const empty = entry({ body: "", preview: "" });
+    const { user } = await openDiary(`/diary/${empty.id}`, [empty]);
+
+    await user.click(await screen.findByRole("button", { name: "Get ideas" }));
+    await screen.findByText("週末に何をしましたか？");
+    expect(variablesOf("SuggestDiaryTopics")).toEqual({ language: "JA", notesLanguage: "EN", body: null });
+
+    await user.type(screen.getByLabelText(/diary entry/i), "今日はハンバーガーが食べたかった");
+    await user.click(screen.getByRole("button", { name: "Other ideas" }));
+    await waitFor(() => expect(requestsFor("SuggestDiaryTopics")).toHaveLength(2));
+    expect(variablesOf("SuggestDiaryTopics")["body"]).toBe("今日はハンバーガーが食べたかった");
+    // Let the draft's autosave land here: left pending, it would fire on unmount after the fake
+    // server is gone, and its failure toast would leak into the next test.
+    expect(await screen.findByText("Saved", {}, { timeout: 3000 })).toBeInTheDocument();
+  });
+
+  it("deletes an entry after a confirmation, leaving its URL and the list", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [EVENING, MORNING]);
+
+    await user.click(await screen.findByRole("button", { name: "Delete entry" }));
+    const confirm = screen.getByRole("group", { name: "Confirm delete" });
+    expect(within(confirm).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    expect(requestsFor("DeleteDiaryEntry")).toHaveLength(0);
+    await user.click(within(confirm).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/diary"));
+    expect(variablesOf("DeleteDiaryEntry")).toEqual({ id: MORNING_ID });
+    expect(list().getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([`/diary/${EVENING_ID}`]);
+    expect(screen.getByText("Choose an entry, or start a new one.")).toBeInTheDocument();
+  });
+
+  it("changes an empty entry's languages, swapping when one side takes the other's", async () => {
+    const { user } = await openDiary("/diary");
+    await user.click(screen.getByRole("button", { name: "New entry" }));
+    await screen.findByRole("combobox", { name: "Writing in" });
+
+    await pick(user, "Writing in", /Spanish/);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Writing in" })).toHaveTextContent("Spanish"));
+    expect(variablesOf("SaveDiaryEntry")).toMatchObject({ language: "ES", notesLanguage: "EN" });
+
+    await pick(user, "Notes in", /Spanish/);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Notes in" })).toHaveTextContent("Spanish"));
+    expect(variablesOf("SaveDiaryEntry")).toMatchObject({ language: "EN", notesLanguage: "ES" });
+    expect(screen.getByLabelText("Diary entry")).toHaveAttribute("lang", "en");
+  });
+
+  it("shows a typed failure as a toast and keeps the learner's text", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    server.onGraphql("ReviewDiaryEntry", () =>
+      json({
+        data: {
+          reviewDiaryEntry: {
+            __typename: "DiaryEntryPayload",
+            entry: null,
+            errors: [
+              {
+                __typename: "TranslateError",
+                code: "UPSTREAM_RATE_LIMITED",
+                message: "busy",
+                retryable: true,
+                retryAfterSeconds: null,
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Get feedback" }));
+
+    expect(await screen.findByText("Claude is busy — try again in a moment.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Diary entry")).toHaveValue("朝ご飯を食べました。");
+    expect(screen.getByRole("button", { name: "Write" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("drops an autosave that lands after its entry was deleted, without a toast", async () => {
+    const { user, diary } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    const box = await screen.findByLabelText("Diary entry");
+    diary.entries.splice(0);
+
+    await user.type(box, "美味しかった。");
+
+    expect(await screen.findByText("Not saved", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(requestsFor("SaveDiaryEntry")).not.toHaveLength(0);
+    expect(screen.queryByText("This entry doesn't exist any more.")).not.toBeInTheDocument();
+    // Unmount while the fake server is still there, so the save on the way out is refused the
+    // same way instead of failing on a real fetch after the test.
+    cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+
+  it("says an entry deleted elsewhere doesn't exist any more when asked for feedback", async () => {
+    const { user, diary } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    await screen.findByLabelText("Diary entry");
+    diary.entries.splice(0); // deleted in another tab
+
+    await user.click(screen.getByRole("button", { name: "Get feedback" }));
+
+    expect(await screen.findByText("This entry doesn't exist any more.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Diary entry")).toHaveValue("朝ご飯を食べました。");
+  });
+
+  it("says the languages changed while Claude was answering, keeping the entry's text", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    await screen.findByLabelText("Diary entry");
+    server.onGraphql("ReviewDiaryEntry", () =>
+      json({
+        data: null,
+        errors: [
+          {
+            message: "The languages changed while Claude was answering — try again.",
+            extensions: { code: "INVALID" },
+          },
+        ],
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Get feedback" }));
+
+    expect(
+      await screen.findByText("The languages changed while Claude was answering — try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Diary entry")).toHaveValue("朝ご飯を食べました。");
+  });
+
+  it("says the languages can't change once an entry has had feedback elsewhere", async () => {
+    const empty = entry({ body: "", preview: "" });
+    const { user, diary } = await openDiary(`/diary/${empty.id}`, [empty]);
+    await screen.findByRole("combobox", { name: "Writing in" });
+    Object.assign(diary.find(empty.id) ?? {}, { reviewedAt: localIso(2026, 9, 21, 10, 0) }); // reviewed in another tab
+
+    await pick(user, "Writing in", /Spanish/);
+
+    expect(
+      await screen.findByText("An entry's languages can't be changed once it has had feedback or help."),
+    ).toBeInTheDocument();
+    expect(diary.find(empty.id)?.language).toBe("JA");
+  });
+
+  it("keeps a follow-up question in its box when the reply fails", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    const panel = await screen.findByRole("region", { name: "Help me say…" });
+    server.onGraphql("StartDiaryHelpThread", () => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    await user.type(within(panel).getByLabelText(/What do you want to say\?/), "How do I say it rained?");
+    await user.click(within(panel).getByRole("button", { name: "Ask" }));
+
+    expect(await screen.findByText("Couldn't reach the server. Check your connection and try again.")).toBeInTheDocument();
+    expect(within(panel).getByLabelText(/What do you want to say\?/)).toHaveValue("How do I say it rained?");
+  });
+
+  it("moves the focus to the feedback when a ⌘/Ctrl+Enter review takes the textarea away", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    const status = screen.getByRole("status");
+    expect(status).toBeEmptyDOMElement();
+
+    await user.click(await screen.findByLabelText("Diary entry"));
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    const feedback = await screen.findByRole("region", { name: "Claude's feedback" });
+    await waitFor(() => expect(feedback).toHaveFocus());
+    expect(status).toHaveTextContent("Feedback ready.");
+  });
+
+  it("saves a pending draft before signing out, and signs out without a session-ended notice", async () => {
+    const { user, diary } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    let signedIn = true;
+    server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
+    server.onSession("DELETE", () => {
+      signedIn = false;
+      return new Response(null, { status: 204 });
+    });
+
+    await user.type(await screen.findByLabelText("Diary entry"), "美味しかった。");
+    // Straight away, inside the autosave's pause.
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByLabelText("Access code")).toBeInTheDocument();
+    const saveAt = server.requests.findIndex((request) => request.body["operationName"] === "SaveDiaryEntry");
+    const signOutAt = server.requests.findIndex((request) => request.method === "DELETE");
+    expect(saveAt).toBeGreaterThanOrEqual(0);
+    expect(saveAt).toBeLessThan(signOutAt);
+    expect(diary.find(MORNING_ID)?.body).toBe("朝ご飯を食べました。美味しかった。");
+    expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
+  });
+
+  it("doesn't call a deliberate sign-out an ended session when a request still out comes back refused", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    let signedIn = true;
+    server.onGraphql("Viewer", () => (signedIn ? viewer() : unauthenticated()));
+    server.onSession("DELETE", () => {
+      signedIn = false;
+      return new Response(null, { status: 204 });
+    });
+    let answer: () => void = () => undefined;
+    server.onGraphql("StartDiaryHelpThread", () => new Promise<Response>((resolve) => (answer = () => resolve(unauthenticated()))));
+    const panel = await screen.findByRole("region", { name: "Help me say…" });
+
+    await user.type(within(panel).getByLabelText(/What do you want to say\?/), "How do I say it rained?");
+    await user.click(within(panel).getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByLabelText("Access code");
+    answer();
+
+    await waitFor(() => expect(requestsFor("Viewer").length).toBeGreaterThanOrEqual(2));
+    // Give the refused answer time to arrive and be (not) acted on.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByLabelText("Access code")).toBeInTheDocument();
+    expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
+  });
+
+  it("forgets one access code's diary and drafts when its session ends, before another code signs in", async () => {
+    // Code A has an entry open with a draft its autosave hasn't sent yet.
+    window.history.replaceState(null, "", `/diary/${MORNING_ID}`);
+    let session: "A" | "B" | null = "A";
+    server.onGraphql("Viewer", () => (session === null ? unauthenticated() : viewer()));
+    server.onSession("POST", () => {
+      session = "B";
+      return new Response(null, { status: 204 });
+    });
+    installFakeDiary(server, [MORNING]);
+    let client: ApolloClient | undefined;
+    const user = userEvent.setup();
+    render(<App createClient={(options) => (client = createApolloClient(options))} />);
+    await user.type(await screen.findByLabelText("Diary entry"), "美味しかった。");
+    expect(unsavedDraft(MORNING_ID)).toBe("朝ご飯を食べました。美味しかった。");
+
+    // A's session ends elsewhere (expired, revoked, signed out in another tab): the autosave is refused.
+    session = null;
+    server.onGraphql("SaveDiaryEntry", unauthenticated);
+    expect(await screen.findByText(/session ended/i, {}, { timeout: 3000 })).toBeInTheDocument();
+
+    // Nothing of A's is left in memory, and the wipe cancelled nothing loudly.
+    expect(client?.extract()).toEqual({});
+    expect(unsavedDraft(MORNING_ID)).toBeUndefined();
+    expect(screen.queryByText(/朝ご飯/)).not.toBeInTheDocument();
+
+    // Code B signs in on the same tab; the server answers B's own diary.
+    const listRequestsBefore = requestsFor("DiaryEntries").length;
+    installFakeDiary(server, [EVENING]);
+    await user.type(screen.getByLabelText("Access code"), "ctx-B");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    const entries = within(await screen.findByRole("navigation", { name: "Diary entries" }));
+    expect(await entries.findByRole("link", { name: /Hoy fui al cine/ })).toBeInTheDocument();
+    expect(await screen.findByText("This entry doesn't exist, or belongs to another access code.")).toBeInTheDocument();
+    expect(requestsFor("DiaryEntries").length).toBeGreaterThan(listRequestsBefore);
+    expect(screen.queryByText(/朝ご飯/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/美味しかった/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Diary entry")).not.toBeInTheDocument();
+    expect(unsavedDraft(MORNING_ID)).toBeUndefined();
+    expect(screen.queryByText(/Something unexpected/)).not.toBeInTheDocument();
+  });
+
+  it("notices a later session ending after a session was restored by Try again, not by signing in here", async () => {
+    window.history.replaceState(null, "", `/diary/${MORNING_ID}`);
+    let viewerAnswer: () => Response | Promise<Response> = () => viewer();
+    server.onGraphql("Viewer", () => viewerAnswer());
+    installFakeDiary(server, [MORNING]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Diary entry");
+
+    // The session ends, and asking the server who we are then fails outright.
+    viewerAnswer = () => Promise.reject(new TypeError("Failed to fetch"));
+    server.onGraphql("SaveDiaryEntry", unauthenticated);
+    await user.type(screen.getByLabelText("Diary entry"), "美味しかった。");
+    const retry = await screen.findByRole("button", { name: "Try again" }, { timeout: 3000 });
+
+    // Signed in from another tab meanwhile: Try again finds a session and restores the app.
+    viewerAnswer = () => viewer();
+    installFakeDiary(server, [MORNING]);
+    await user.click(retry);
+    const box = await screen.findByLabelText("Diary entry");
+
+    // That session ends too: this tab must notice, not keep ignoring refusals.
+    viewerAnswer = unauthenticated;
+    server.onGraphql("SaveDiaryEntry", unauthenticated);
+    await user.type(box, "楽しかった。");
+    expect(await screen.findByLabelText("Access code", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByText(/session ended/i)).toBeInTheDocument();
+  });
+
+  it.each(["answered", "failed"] as const)(
+    "drops a feedback request %s after its code signed out and another signed in",
+    async (outcome) => {
+      window.history.replaceState(null, "", `/diary/${MORNING_ID}`);
+      let session: "A" | "B" | null = "A";
+      server.onGraphql("Viewer", () => (session === null ? unauthenticated() : viewer()));
+      server.onSession("DELETE", () => {
+        session = null;
+        return new Response(null, { status: 204 });
+      });
+      server.onSession("POST", () => {
+        session = "B";
+        return new Response(null, { status: 204 });
+      });
+      // A's review is held at the server until B is signed in; the fake diary still writes the answer.
+      const handlers = new Map<string, Parameters<FakeServer["onGraphql"]>[1]>();
+      const register = server.onGraphql;
+      server.onGraphql = (name, handler) => {
+        handlers.set(name, handler);
+        register(name, handler);
+      };
+      installFakeDiary(server, [MORNING]);
+      const review = handlers.get("ReviewDiaryEntry");
+      let release: () => void = () => undefined;
+      register("ReviewDiaryEntry", (body) =>
+        new Promise<Response>((resolve, reject) => {
+          release = () =>
+            outcome === "answered" ? resolve(review!(body)) : reject(new TypeError("Failed to fetch"));
+        }),
+      );
+      let client: ApolloClient | undefined;
+      const user = userEvent.setup();
+      render(<App createClient={(options) => (client = createApolloClient(options))} />);
+      await screen.findByLabelText("Diary entry");
+      await user.click(screen.getByRole("button", { name: "Get feedback" }));
+      await waitFor(() => expect(requestsFor("ReviewDiaryEntry")).toHaveLength(1));
+
+      await user.click(screen.getByRole("button", { name: "Sign out" }));
+      installFakeDiary(server, [EVENING]);
+      await user.type(await screen.findByLabelText("Access code"), "ctx-B");
+      await user.click(screen.getByRole("button", { name: "Continue" }));
+      const entries = within(await screen.findByRole("navigation", { name: "Diary entries" }));
+      expect(await entries.findByRole("link", { name: /Hoy fui al cine/ })).toBeInTheDocument();
+
+      release();
+      // Give A's answer time to arrive and be (not) acted on.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(JSON.stringify(client?.extract())).not.toContain("朝ご飯");
+      expect(screen.queryByText(/朝ご飯/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Couldn't|server|went wrong/i)).not.toBeInTheDocument();
+    },
+  );
+
+  it("treats a malformed entry URL as an entry that doesn't exist", async () => {
+    await openDiary("/diary/%ZZ", [MORNING]);
+    expect(await screen.findByText("This entry doesn't exist, or belongs to another access code.")).toBeInTheDocument();
+  });
+
+  it("says an entry doesn't exist when its id is missing or another code's", async () => {
+    // Well formed, but no entry of this access code's.
+    await openDiary("/diary/0f1e2d3c-4b5a-4968-8776-655443322110", [MORNING]);
+
+    expect(await screen.findByText("This entry doesn't exist, or belongs to another access code.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Diary entry")).not.toBeInTheDocument();
+  });
+});
+
+describe("diaryErrorMessage", () => {
+  const error = (code: TranslateErrorCode, retryAfterSeconds: number | null = null) => ({
+    code,
+    message: "Server wording.",
+    retryable: false,
+    retryAfterSeconds,
+  });
+
+  it("words the input checks for a diary rather than a translation", () => {
+    expect(diaryErrorMessage(error("EMPTY_INPUT"))).toBe("Write something first.");
+    expect(diaryErrorMessage(error("SAME_LANGUAGE"))).toMatch(/must be different/);
+  });
+
+  it("names every length limit the diary has, from the same constants the page checks", () => {
+    expect(diaryErrorMessage(error("INPUT_TOO_LONG"))).toBe(
+      "That's over the length limit: 10,000 characters for an entry, 2,000 for feedback at a time, 2,000 for a question or reply. Shorten it and try again.",
+    );
+  });
+
+  it("says what Claude declined or ran out of time on without calling it a translation", () => {
+    for (const code of ["REFUSED", "OUTPUT_TOO_LONG", "TIMEOUT"] as const) {
+      const message = diaryErrorMessage(error(code));
+      expect(message).toMatch(/Claude/);
+      expect(message).not.toMatch(/translat/i);
+    }
+    expect(diaryErrorMessage(error("REFUSED"))).toBe("Claude declined to answer this. Try rewording it.");
+  });
+
+  it("shares every other message with Phrases", () => {
+    expect(diaryErrorMessage(error("RATE_LIMITED", 30))).toBe("Server wording. Try again in 30 seconds.");
+  });
+});

@@ -15,7 +15,7 @@ export function StatusScreen({ message, onRetry }: Props) {
           <button
             type="button"
             onClick={onRetry}
-            className="mt-4 rounded-md border border-line bg-canvas px-3 py-1.5 text-sm font-medium hover:bg-surface"
+            className="focus-ring mt-4 rounded-md border border-line bg-canvas px-3 py-1.5 text-sm font-medium hover:bg-surface"
           >
             Try again
           </button>

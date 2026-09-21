@@ -1,6 +1,7 @@
 import type { TranslateErrorCode } from "../gql/graphql.ts";
 import { assertNever } from "./assertNever.ts";
 import { formatWait } from "./formatWait.ts";
+import { MAX_CONTEXT_LENGTH, MAX_SOURCE_LENGTH } from "./translateLimits.ts";
 
 /**
  * The toast text for each typed translate error (design D3.3). Exhaustive: adding a code to the
@@ -16,7 +17,10 @@ export function translateErrorMessage(
     case "EMPTY_INPUT":
       return "Enter some text to translate.";
     case "INPUT_TOO_LONG":
-      return "That's over the length limit (10,000 characters of text, 2,000 of context). Shorten it and try again.";
+      return (
+        `That's over the length limit (${MAX_SOURCE_LENGTH.toLocaleString()} characters of text, ` +
+        `${MAX_CONTEXT_LENGTH.toLocaleString()} of context). Shorten it and try again.`
+      );
     case "SAME_LANGUAGE":
       return "The source and target languages are the same.";
     case "RATE_LIMITED":

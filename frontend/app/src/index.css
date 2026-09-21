@@ -37,20 +37,42 @@
      rgb(189,218,246) — 1.45:1 — and over the hover tint rgb(183,212,239) — 1.43:1. A ring nobody
      can see is the same as no ring, and keyboard users are the only ones who ever get it. */
   --color-focus: var(--color-accent);
+
+  /* The diary's sentence verdicts (docs/diary.md): a pale wash behind each sentence the tutor
+     marked, in the same quiet family as the rest of the page, and a deeper step of each for the
+     sentence whose card is open. The wash is never the only cue — each verdict also has its own
+     underline style and its name on the card and in the accessible name (WCAG 1.4.1) — so what
+     these answer to is the text rule: the learner's own words sit on them in --color-ink, and the
+     underline drawn in --color-frame-muted is the non-text mark (3:1).
+                                              ink     frame-muted
+     --color-verdict-wrong            #fde2e0  10.0:1   5.9:1
+     --color-verdict-wrong-open       #f9c5c1   8.0:1   4.7:1
+     --color-verdict-improvable       #fbecc6  10.5:1   6.2:1
+     --color-verdict-improvable-open  #f5d98c   8.9:1   5.2:1
+     --color-verdict-correct          #ddeedd  10.1:1   6.0:1
+     --color-verdict-correct-open     #bfdfc0   8.5:1   5.0:1
+     all clear of WCAG AA's 4.5:1 for the text and 3:1 for the underline. A resolved sentence drops
+     its wash and keeps a dotted --color-muted underline, 4.5:1 on --color-canvas. */
+  --color-verdict-wrong: #fde2e0;
+  --color-verdict-wrong-open: #f9c5c1;
+  --color-verdict-improvable: #fbecc6;
+  --color-verdict-improvable-open: #f5d98c;
+  --color-verdict-correct: #ddeedd;
+  --color-verdict-correct-open: #bfdfc0;
 }
 
-/* The focus indicator itself, written once, for controls whose only focus affordance it is: both
-   language pickers, the definitions picker, the swap button and the source textarea. Spelling the
-   indicator out per control is what let it drift to three opacities across four of them, and an
-   indicator that is copied is an indicator that gets copied wrong. Ratios are recorded beside
-   --color-focus above.
-   Three controls do NOT use it yet, so this is not the universal it once claimed to be: the
-   glossed word (`ring-accent/40`, 1.66:1) is an inline element in flowing ruby text, where an
-   offset outline needs looking at in a browser before it is imposed; the context textarea and the
-   access-code field (`ring-accent/25`, 1.36:1) also shift `border-color` on focus, so they are
-   faint rather than absent. All three are recorded as deferred, and the first two are this
-   branch's own. The source textarea used to be the fourth and worst — `focus:outline-none` with
-   nothing in its place, no indicator at all — and now takes this one.
+/* The focus indicator itself, written once, and the only focus affordance of every control that
+   uses it: the nav links, Sign out, Try again and Continue on the access screen; on Phrases the
+   language and definitions pickers, the swap button, the source textarea and Update Translation;
+   in the diary the entry links, every button (through PRIMARY_BUTTON and SECONDARY_BUTTON or on
+   its own), the entry and reply textareas, the sentence highlights and their card's Close, the
+   side panel's <summary> and its Show resolved checkbox. Spelling the indicator out per control is what once let it drift
+   to three opacities across four controls, and an indicator that is copied gets copied wrong.
+   Ratios are recorded beside --color-focus above.
+   Three controls do NOT use it yet: the glossed word (`ring-accent/40`, 1.66:1) is an inline
+   element in flowing ruby text, where an offset outline needs looking at in a browser before it is
+   imposed; the context textarea and the access-code field (`ring-accent/25`, 1.36:1) also shift
+   `border-color` on focus, so they are faint rather than absent. All three are deferred.
    `outline` rather than a box-shadow ring: it needs no ring-offset-color kept in step with whatever
    the control happens to sit on, it traces the control's own border-radius, and it survives
    forced-colors mode, where box-shadows are dropped. 2px is the minimum thickness WCAG 2.4.11 asks

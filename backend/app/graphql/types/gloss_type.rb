@@ -4,7 +4,7 @@
 module Types
   class GlossType < Types::BaseObject
     graphql_name "Gloss"
-    description "A word of the translation with a short definition, for the UI to show on hover (design D2.3)."
+    description "A word of the translation with a short definition, for the UI to show on hover."
 
     field :text, String, null: false, description: "The word exactly as it appears in the translation."
     field :reading, String, description: "For Japanese, the word's kana reading. Null when there is none."

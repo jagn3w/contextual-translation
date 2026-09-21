@@ -1,0 +1,162 @@
+# The diary (docs/diary.md). Every mutation that changes an entry or a thread asks for the same
+# fields its query does, so Apollo's normalised cache updates the list and the open entry in place.
+
+fragment DiaryEntrySummaryFields on DiaryEntry {
+  id
+  language
+  notesLanguage
+  preview
+  createdAt
+}
+
+fragment DiaryCommentFields on DiaryComment {
+  id
+  author
+  body
+  createdAt
+}
+
+fragment DiaryThreadFields on DiaryThread {
+  id
+  kind
+  verdict
+  sentence
+  startsAt
+  length
+  title
+  current
+  hintLevel
+  resolved
+  createdAt
+  comments {
+    ...DiaryCommentFields
+  }
+}
+
+fragment DiaryEntryFields on DiaryEntry {
+  ...DiaryEntrySummaryFields
+  body
+  reviewedBody
+  reviewedAt
+  updatedAt
+  threads {
+    ...DiaryThreadFields
+  }
+}
+
+fragment DiaryErrorFields on TranslateError {
+  code
+  message
+  retryable
+  retryAfterSeconds
+}
+
+query DiaryEntries {
+  diaryEntries {
+    ...DiaryEntrySummaryFields
+  }
+}
+
+query DiaryEntry($id: ID!) {
+  diaryEntry(id: $id) {
+    ...DiaryEntryFields
+  }
+}
+
+mutation CreateDiaryEntry($input: CreateDiaryEntryInput!) {
+  createDiaryEntry(input: $input) {
+    entry {
+      ...DiaryEntryFields
+    }
+    errors {
+      ...DiaryErrorFields
+    }
+  }
+}
+
+# Autosave: the body and what the scrollback shows of it, not the threads, which a save can't change.
+mutation SaveDiaryEntry($input: UpdateDiaryEntryInput!) {
+  updateDiaryEntry(input: $input) {
+    entry {
+      ...DiaryEntrySummaryFields
+      body
+      updatedAt
+    }
+    errors {
+      ...DiaryErrorFields
+    }
+  }
+}
+
+mutation DeleteDiaryEntry($input: DeleteDiaryEntryInput!) {
+  deleteDiaryEntry(input: $input) {
+    deletedId
+  }
+}
+
+mutation ReviewDiaryEntry($input: ReviewDiaryEntryInput!) {
+  reviewDiaryEntry(input: $input) {
+    entry {
+      ...DiaryEntryFields
+    }
+    errors {
+      ...DiaryErrorFields
+    }
+  }
+}
+
+mutation StartDiaryHelpThread($input: StartDiaryHelpThreadInput!) {
+  startDiaryHelpThread(input: $input) {
+    thread {
+      ...DiaryThreadFields
+    }
+    errors {
+      ...DiaryErrorFields
+    }
+  }
+}
+
+mutation ReplyToDiaryThread($input: ReplyToDiaryThreadInput!) {
+  replyToDiaryThread(input: $input) {
+    thread {
+      ...DiaryThreadFields
+    }
+    errors {
+      ...DiaryErrorFields
+    }
+  }
+}
+
+mutation RequestDiaryHint($input: RequestDiaryHintInput!) {
+  requestDiaryHint(input: $input) {
+    thread {
+      ...DiaryThreadFields
+    }
+    errors {
+      ...DiaryErrorFields
+    }
+  }
+}
+
+mutation ResolveDiaryThread($input: ResolveDiaryThreadInput!) {
+  resolveDiaryThread(input: $input) {
+    thread {
+      ...DiaryThreadFields
+    }
+    errors {
+      ...DiaryErrorFields
+    }
+  }
+}
+
+mutation SuggestDiaryTopics($input: SuggestDiaryTopicsInput!) {
+  suggestDiaryTopics(input: $input) {
+    topics {
+      prompt
+      gloss
+    }
+    errors {
+      ...DiaryErrorFields
+    }
+  }
+}

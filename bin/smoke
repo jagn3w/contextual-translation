@@ -6,7 +6,8 @@
 #
 # BASE_URL defaults to http://localhost:5173 (the Vite dev server, which proxies to Rails).
 # Against Rails directly on :3000 in development, set ORIGIN=http://localhost:5173 — the origin
-# Rails expects. TEXT, CONTEXT, FROM and TO override the sample translation.
+# Rails expects. TEXT, CONTEXT, FROM and TO override the sample translation; the diary step
+# writes in TO with notes in FROM.
 set -euo pipefail
 
 code=${1:?usage: bin/smoke ACCESS_CODE [BASE_URL]}
@@ -60,6 +61,27 @@ if [[ "$(jq '.data.translate.errors | length' "$out")" != "0" ]]; then
   echo "  FAIL  translate returned errors:"; jq '.data.translate.errors' "$out"; exit 1
 fi
 jq -r '"        \(.data.translate.translation.text)", "        notes: \(.data.translate.translation.notes // "—")"' "$out"
+
+# The diary's own path, without a tutor call, so it costs nothing against production: create an
+# entry, read it back, delete it. Each step fails on a payload error or a missing record.
+expect "create diary entry" 200 "$(graphql 'mutation($input: CreateDiaryEntryInput!) {
+  createDiaryEntry(input: $input) { entry { id language notesLanguage } errors { code message } } }' \
+  "$(jq -nc --arg f "$from" --arg to "$to" '{input: {language: $to, notesLanguage: $f}}')")"
+entry_id=$(jq -r '.data.createDiaryEntry.entry.id // empty' "$out")
+if [[ -z "$entry_id" ]]; then
+  echo "  FAIL  createDiaryEntry returned no entry:"; jq '.errors // .data.createDiaryEntry.errors' "$out"; exit 1
+fi
+expect "read diary entry" 200 "$(graphql 'query($id: ID!) { diaryEntry(id: $id) { id } }' \
+  "$(jq -nc --arg id "$entry_id" '{id: $id}')")"
+if [[ "$(jq -r '.data.diaryEntry.id // empty' "$out")" != "$entry_id" ]]; then
+  echo "  FAIL  diaryEntry did not return the new entry:"; head -c 300 "$out"; echo; exit 1
+fi
+expect "delete diary entry" 200 "$(graphql 'mutation($input: DeleteDiaryEntryInput!) {
+  deleteDiaryEntry(input: $input) { deletedId } }' "$(jq -nc --arg id "$entry_id" '{input: {id: $id}}')")"
+if [[ "$(jq -r '.data.deleteDiaryEntry.deletedId // empty' "$out")" != "$entry_id" ]]; then
+  echo "  FAIL  deleteDiaryEntry did not delete the entry:"; head -c 300 "$out"; echo; exit 1
+fi
+echo "        created, read back and deleted entry $entry_id"
 
 expect "sign out" 204 "$(request DELETE /api/session)"
 expect "viewer after sign-out" 401 "$(graphql '{ viewer { accessCodeLabel } }')"

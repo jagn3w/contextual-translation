@@ -67,4 +67,22 @@ describe("palette contrast", () => {
     expect(contrast(token("color-frame-muted"), token("color-frame"))).toBeCloseTo(6.3, 1);
     expect(contrast(token("color-muted"), token("color-frame"))).toBeCloseTo(3.9, 1);
   });
+
+  it("keeps the learner's words readable on every diary verdict highlight, and its underline visible", () => {
+    // The ink is text (4.5:1); the frame-muted underline is the non-colour verdict cue (3:1).
+    const recorded: Record<string, number> = {
+      "color-verdict-wrong": 10.0,
+      "color-verdict-wrong-open": 8.0,
+      "color-verdict-improvable": 10.5,
+      "color-verdict-improvable-open": 8.9,
+      "color-verdict-correct": 10.1,
+      "color-verdict-correct-open": 8.5,
+    };
+    for (const [name, ratio] of Object.entries(recorded)) {
+      const ground = token(name);
+      expect(contrast(token("color-ink"), ground), `ink on --${name}`).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(token("color-ink"), ground), `ink on --${name}`).toBeCloseTo(ratio, 1);
+      expect(contrast(token("color-frame-muted"), ground), `underline on --${name}`).toBeGreaterThanOrEqual(3);
+    }
+  });
 });

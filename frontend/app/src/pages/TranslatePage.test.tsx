@@ -657,7 +657,7 @@ describe("TranslatePage", () => {
               {
                 __typename: "TranslateError",
                 code: "RATE_LIMITED",
-                message: "You're translating quickly.",
+                message: "You're sending requests to Claude quickly.",
                 retryable: true,
                 retryAfterSeconds: 30,
               },
@@ -671,7 +671,7 @@ describe("TranslatePage", () => {
     await user.type(screen.getByLabelText("Text to translate"), "Hello");
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
 
-    expect(await screen.findByText("You're translating quickly. Try again in 30 seconds.")).toBeInTheDocument();
+    expect(await screen.findByText("You're sending requests to Claude quickly. Try again in 30 seconds.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
   });
 
@@ -686,7 +686,7 @@ describe("TranslatePage", () => {
               {
                 __typename: "TranslateError",
                 code: "RATE_LIMITED",
-                message: "This device has reached today's translation limit.",
+                message: "This device has reached today's limit of Claude requests.",
                 retryable: true,
                 retryAfterSeconds: 61_200,
               },
@@ -701,7 +701,7 @@ describe("TranslatePage", () => {
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
 
     expect(
-      await screen.findByText("This device has reached today's translation limit. It resets in 17 hours."),
+      await screen.findByText("This device has reached today's limit of Claude requests. It resets in 17 hours."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
   });
