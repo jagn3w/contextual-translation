@@ -239,7 +239,7 @@ describe("DiaryView", () => {
 
     await user.click(screen.getByRole("button", { name: "Get ideas" }));
 
-    expect(onSuggestTopics).toHaveBeenCalledWith("e1");
+    expect(onSuggestTopics).toHaveBeenCalledWith("e1", reviewed().body);
     expect(await screen.findByText("週末に何をしましたか？")).toHaveAttribute("lang", "ja");
     expect(screen.getByText("What did you do at the weekend?")).toHaveAttribute("lang", "en");
   });

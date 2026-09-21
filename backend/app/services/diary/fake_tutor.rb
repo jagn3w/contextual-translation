@@ -56,6 +56,13 @@ module Diary
 
     sig { override.params(request: TopicsRequest).returns(T::Array[Topic]) }
     def suggest_topics(request)
+      unless request.entry_text.empty?
+        return (1..Prompt::TOPIC_COUNT).map do |number|
+          Topic.new(prompt: "Fake follow-up #{number} to: #{request.entry_text.truncate(40)}",
+            gloss: "Fake gloss (#{request.notes_language.serialize}) of follow-up #{number}")
+        end
+      end
+
       TOPICS.fetch(request.language).map do |prompt|
         Topic.new(prompt:, gloss: "Fake gloss (#{request.notes_language.serialize}) of: #{prompt}")
       end

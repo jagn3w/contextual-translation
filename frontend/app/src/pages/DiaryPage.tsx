@@ -214,13 +214,19 @@ export function DiaryPage({ entryId }: Props) {
         return true;
       },
 
-      async onSuggestTopics(id) {
+      async onSuggestTopics(id, body) {
         const source = client.readQuery({ query: DiaryEntryDocument, variables: { id } })?.diaryEntry;
         if (source == null) return null;
         const result = await attempt(() =>
           client.mutate({
             mutation: SuggestDiaryTopicsDocument,
-            variables: { input: { language: source.language, notesLanguage: source.notesLanguage } },
+            variables: {
+              input: {
+                language: source.language,
+                notesLanguage: source.notesLanguage,
+                body: body.trim() === "" ? null : body,
+              },
+            },
           }),
         );
         const payload = result?.data?.suggestDiaryTopics;

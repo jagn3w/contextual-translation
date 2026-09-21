@@ -78,6 +78,8 @@ module Diary
       const :notes_language, Translation::Language
       # Previews of the learner's recent entries, so the ideas can steer away from them.
       const :recent_entries, T::Array[String]
+      # What the learner has written so far; when present the ideas are follow-ups to it.
+      const :entry_text, String, default: ""
     end
 
     class Topic < T::Struct

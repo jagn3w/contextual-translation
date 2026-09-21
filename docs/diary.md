@@ -62,9 +62,11 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
 
 ## Writer's block and hints
 
-- **Ideas**: the tutor suggests three short prompts to write about, each in the entry's language with
-  a gloss in the notes language, avoiding topics of the learner's recent entries. Ephemeral — not
-  stored.
+- **Ideas**: the tutor suggests three short prompts, each in the entry's language with a gloss in
+  the notes language. With text already in the entry (the draft on screen, saved or not), they are
+  follow-ups to it — the questions a friend reading it would ask next ("今日はハンバーガーが食べたかった"
+  → "How did it taste?", "Who did you go with?"). With an empty entry they are fresh topics that
+  avoid the learner's recent entries. Ephemeral — not stored.
 - **Help me say…** (kind `HELP` threads): the learner writes, in their own language, what they want to
   say ("How do I say I went hiking with my sister?"). The tutor answers with a first hint in the
   style of the broad hint a teacher gives: it points at the one thing that unlocks the sentence
@@ -144,7 +146,7 @@ type Mutation {
   replyToDiaryThread(input: ReplyToDiaryThreadInput!): DiaryThreadPayload!      # {threadId, body}
   requestDiaryHint(input: RequestDiaryHintInput!): DiaryThreadPayload!          # {threadId}
   resolveDiaryThread(input: ResolveDiaryThreadInput!): DiaryThreadPayload!      # {threadId, resolved}
-  suggestDiaryTopics(input: SuggestDiaryTopicsInput!): DiaryTopicsPayload!      # {language, notesLanguage}
+  suggestDiaryTopics(input: SuggestDiaryTopicsInput!): DiaryTopicsPayload!      # {language, notesLanguage, body?}
 }
 
 type DiaryEntryPayload { entry: DiaryEntry errors: [TranslateError!]! }

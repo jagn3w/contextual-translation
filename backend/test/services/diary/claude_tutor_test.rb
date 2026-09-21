@@ -162,6 +162,18 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
     end
   end
 
+  test "topics for an entry in progress send what has been written" do
+    stub_request(:post, MESSAGES_URL).to_return(response(topics: Array.new(3) { |i| { prompt: "P#{i}", gloss: "G#{i}" } }))
+
+    @tutor.suggest_topics(Diary::Tutor::TopicsRequest.new(language: Translation::Language::JA,
+      notes_language: Translation::Language::EN, recent_entries: [], entry_text: "今日はハンバーガーが食べたかった"))
+
+    assert_requested(:post, MESSAGES_URL) do |req|
+      assert_includes JSON.parse(req.body).dig("messages", 0, "content"), "<entry>\n今日はハンバーガーが食べたかった\n</entry>"
+      true
+    end
+  end
+
   test "no usable topics is UPSTREAM_ERROR" do
     stub_request(:post, MESSAGES_URL).to_return(response(topics: [ { prompt: "", gloss: "" } ]))
 

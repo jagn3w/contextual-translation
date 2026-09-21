@@ -24,7 +24,8 @@ export type DiaryActions = ThreadActions & {
   onChangeLanguages?: ((entryId: string, language: Language, notesLanguage: Language) => Promise<unknown>) | undefined;
   /** Deletes an entry; resolves true once it's gone (the caller then leaves its URL). */
   onDeleteEntry: (entryId: string) => Promise<boolean>;
-  onSuggestTopics: (entryId: string) => Promise<DiaryTopic[] | null>;
+  /** `body` is the draft on screen, saved or not: with text in it the ideas follow on from it. */
+  onSuggestTopics: (entryId: string, body: string) => Promise<DiaryTopic[] | null>;
   onStartHelp: (entryId: string, question: string) => Promise<boolean>;
 };
 
@@ -116,7 +117,7 @@ function EntryWorkspace({ entry, actions }: { entry: DiaryEntry; actions: DiaryA
         <SidePanel
           entry={entry}
           actions={actions}
-          onSuggestTopics={() => actions.onSuggestTopics(entry.id)}
+          onSuggestTopics={() => actions.onSuggestTopics(entry.id, body)}
           onStartHelp={(question) => actions.onStartHelp(entry.id, question)}
         />
       </aside>

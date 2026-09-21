@@ -110,11 +110,19 @@ module Diary
 
     TOPICS_SYSTEM = <<~PROMPT
       #{TEACHER}
-      The student does not know what to write about today. Suggest exactly #{TOPIC_COUNT} short, concrete
+      The student wants ideas for what to write. Suggest exactly #{TOPIC_COUNT} short, concrete
       diary prompts, each written in <language> at a level a learner can manage, with a "gloss":
-      its meaning in <notes_language>. Make them varied and personal (their day, their plans,
-      their opinions, a memory), and steer away from what the recent entries in <recent_entries>
-      were about.
+      its meaning in <notes_language>.
+
+      When <entry> holds what they have written so far, the prompts are follow-ups that help them
+      keep going from there: the questions a friend reading it would ask next. For "今日はハンバーガーが
+      食べたかった", that is "どんな味でしたか？" (how did it taste?) or "誰と行きましたか？" (who did you
+      go with?). Ask about what they actually wrote, each prompt opening a different direction
+      (details, feelings, people, what happened next, why), and do not correct their writing here.
+
+      When <entry> is "(empty)", they do not know what to write about yet: make the prompts varied and
+      personal (their day, their plans, their opinions, a memory), and steer away from what the
+      recent entries in <recent_entries> were about.
 
       Return them in "topics".
     PROMPT
@@ -243,6 +251,9 @@ module Diary
         <recent_entries>
         #{recent.empty? ? "(none)" : recent.join("\n")}
         </recent_entries>
+        <entry>
+        #{request.entry_text.empty? ? "(empty)" : request.entry_text}
+        </entry>
       MESSAGE
     end
 

@@ -336,6 +336,11 @@ input StartDiaryHelpThreadInput {
 }
 
 input SuggestDiaryTopicsInput {
+  """
+  What the learner has written so far, saved or not. When it has text, the ideas
+  are follow-ups that build on it rather than fresh topics.
+  """
+  body: String
   language: Language!
   notesLanguage: Language!
 }

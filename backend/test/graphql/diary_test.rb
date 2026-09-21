@@ -252,6 +252,14 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     assert topics.all? { |topic| topic["prompt"].present? && topic["gloss"].present? }
   end
 
+  test "suggests follow-ups to the text already written" do
+    topics = mutate(TOPICS, "suggestDiaryTopics", language: "JA", notesLanguage: "EN",
+      body: "今日はハンバーガーが食べたかった")["topics"]
+
+    assert_equal 3, topics.size
+    assert topics.all? { |topic| topic["prompt"].start_with?("Fake follow-up") }
+  end
+
   test "validation failures come back as typed errors and change nothing" do
     entry = create_entry
 

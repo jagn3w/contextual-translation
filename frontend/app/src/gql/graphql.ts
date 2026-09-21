@@ -83,6 +83,11 @@ export type StartDiaryHelpThreadInput = {
 };
 
 export type SuggestDiaryTopicsInput = {
+  /**
+   * What the learner has written so far, saved or not. When it has text, the ideas
+   * are follow-ups that build on it rather than fresh topics.
+   */
+  body?: string | null | undefined;
   language: Language;
   notesLanguage: Language;
 };

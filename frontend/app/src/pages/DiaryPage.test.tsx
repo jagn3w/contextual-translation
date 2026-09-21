@@ -174,14 +174,30 @@ describe("DiaryPage", () => {
     expect(await within(panel).findByText("Hint 2: key vocabulary.")).toBeInTheDocument();
   });
 
-  it("suggests ideas in the entry's languages", async () => {
+  it("suggests ideas in the entry's languages, following on from what is written", async () => {
     const { user } = await openDiary("/diary/e1", [MORNING]);
 
     await user.click(await screen.findByRole("button", { name: "Get ideas" }));
 
     expect(await screen.findByText("週末に何をしましたか？")).toBeInTheDocument();
     expect(screen.getByText("What did you do at the weekend?")).toBeInTheDocument();
-    expect(variablesOf("SuggestDiaryTopics")).toEqual({ language: "JA", notesLanguage: "EN" });
+    expect(variablesOf("SuggestDiaryTopics")).toEqual({ language: "JA", notesLanguage: "EN", body: "朝ご飯を食べました。" });
+  });
+
+  it("sends the unsaved draft for ideas, and no body for an empty entry", async () => {
+    const { user } = await openDiary("/diary/e3", [entry({ id: "e3", body: "", preview: "" })]);
+
+    await user.click(await screen.findByRole("button", { name: "Get ideas" }));
+    await screen.findByText("週末に何をしましたか？");
+    expect(variablesOf("SuggestDiaryTopics")).toEqual({ language: "JA", notesLanguage: "EN", body: null });
+
+    await user.type(screen.getByLabelText(/diary entry/i), "今日はハンバーガーが食べたかった");
+    await user.click(screen.getByRole("button", { name: "Other ideas" }));
+    await waitFor(() => expect(requestsFor("SuggestDiaryTopics")).toHaveLength(2));
+    expect(variablesOf("SuggestDiaryTopics")["body"]).toBe("今日はハンバーガーが食べたかった");
+    // Let the draft's autosave land here: left pending, it would fire on unmount after the fake
+    // server is gone, and its failure toast would leak into the next test.
+    expect(await screen.findByText("Saved", {}, { timeout: 3000 })).toBeInTheDocument();
   });
 
   it("deletes an entry after a confirmation, leaving its URL and the list", async () => {

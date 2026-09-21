@@ -157,12 +157,21 @@ module Diary
 
     sig do
       params(access_code: AccessCode, language: Translation::Language, notes_language: Translation::Language,
-        session: Authentication::Current).returns(T::Array[Tutor::Topic])
+        session: Authentication::Current, body: String).returns(T::Array[Tutor::Topic])
     end
-    def suggest_topics(access_code, language:, notes_language:, session:)
+    def suggest_topics(access_code, language:, notes_language:, session:, body: "")
+      validate_body!(body)
       @rate_limiter.check!(session)
-      recent = access_code.diary_entries.order(created_at: :desc).limit(RECENT_ENTRIES).map(&:preview).reject(&:empty?)
-      @tutor.suggest_topics(Tutor::TopicsRequest.new(language:, notes_language:, recent_entries: recent))
+      # With text on the page the ideas follow on from it, so the recent entries — this one among
+      # them — are not topics to avoid; without, they are what keeps the ideas fresh.
+      recent =
+        if body.strip.empty?
+          access_code.diary_entries.order(created_at: :desc).limit(RECENT_ENTRIES).map(&:preview).reject(&:empty?)
+        else
+          []
+        end
+      @tutor.suggest_topics(Tutor::TopicsRequest.new(language:, notes_language:, recent_entries: recent,
+        entry_text: body.strip))
     end
 
     private

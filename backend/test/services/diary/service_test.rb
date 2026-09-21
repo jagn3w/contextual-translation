@@ -129,6 +129,27 @@ class Diary::ServiceTest < ActiveSupport::TestCase
       .suggest_topics(@access_code, language: Translation::Language::ES, notes_language: Translation::Language::EN, session: @session)
 
     assert_equal [ "Fui a la playa." ], recorded.sole.recent_entries
+    assert_equal "", recorded.sole.entry_text
+  end
+
+  test "with text on the page, topics follow on from it instead of steering away" do
+    recorded = []
+    tutor = Diary::FakeTutor.new
+    tutor.define_singleton_method(:suggest_topics) do |request|
+      recorded << request
+      Diary::FakeTutor.new.suggest_topics(request)
+    end
+    @entry.update!(body: "Fui a la playa.")
+    service = Diary::Service.new(tutor:, rate_limiter: Translation::RateLimiter.new(cache: @cache))
+    service.suggest_topics(@access_code, language: Translation::Language::JA, notes_language: Translation::Language::EN,
+      body: "  今日はハンバーガーが食べたかった\n", session: @session)
+
+    assert_equal "今日はハンバーガーが食べたかった", recorded.sole.entry_text
+    assert_empty recorded.sole.recent_entries, "the entry being written is not a topic to avoid"
+    assert_code(:INPUT_TOO_LONG) do
+      service.suggest_topics(@access_code, language: Translation::Language::JA,
+        notes_language: Translation::Language::EN, body: "あ" * 10_001, session: @session)
+    end
   end
 
   private
