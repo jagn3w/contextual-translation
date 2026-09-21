@@ -423,7 +423,9 @@ diary.md explains the diary columns.
   code's id behaves exactly like a missing one. `gen_random_uuid()` is built into Postgres 13+; no
   extension is needed.
 - **Migrations** (`backend/db/migrate/`): `CreateSolidCacheEntries`, `CreateAccessCodes`,
-  `CreateDiary`. Solid Cache normally has its own database and `cache_schema.rb`; here it shares the
+  `CreateDiary`, `AddPublicIdsToDiary`. Add a new migration rather than editing one that has been
+  run anywhere, a developer's database included: Rails records a migration by its version, so an
+  edited one never runs again on a database that already has it. Solid Cache normally has its own database and `cache_schema.rb`; here it shares the
   primary database (one Postgres app in production), so its table comes from an ordinary migration.
   The container entrypoint (`backend/bin/docker-entrypoint`) runs `db:prepare` before starting
   Puma; production does not dump the schema after migrating, so regenerate `db/schema.rb` in

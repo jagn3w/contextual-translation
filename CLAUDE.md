@@ -23,7 +23,8 @@ language-learning diary with Claude as tutor). Both call Claude through one shar
   to match. Recipe: [docs/api_boundary.md](docs/api_boundary.md).
 - **Models, migrations, routes or GraphQL input types**: `bin/tapioca dsl` in `backend/` (it runs
   against the test database) and commit the RBIs under `backend/sorbet/rbi/dsl/`; `bin/check`
-  fails if they are stale. Commit `backend/db/schema.rb` with migrations.
+  fails if they are stale. Commit `backend/db/schema.rb` with migrations, and add a new migration
+  rather than editing one that may already have run somewhere.
 - **A prompt**: read [docs/prompts.md](docs/prompts.md) first; keep the fake translator/tutor
   behaving like production.
 
