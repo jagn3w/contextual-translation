@@ -22,6 +22,17 @@ homework. This file is the design and the contract between the backend and the f
 - The UI names Claude as the source of the feedback, as the Phrases page does ("Asking Claude…",
   "Claude is busy"); the diary reuses the same wording and error messages.
 
+## Teaching the idiom, not the literal
+
+Everything the tutor writes — tips, replies, hints — aims at how a native speaker would say what
+the learner *means*, not at a word-for-word rendering of the learner's own language. Where the
+learner's words could mean things the target language expresses differently (English "I want a
+hamburger": Japanese 食べたい, want to eat one, versus 欲しい, want to get or have one), the tutor
+does not pick one silently: if the meaning is clear it steers to the natural expression and names
+the nuance; if not, it asks which they mean first. A "Help me say…" thread may therefore open with
+that question instead of the first hint; asking for another hint without answering makes the tutor
+go with the likeliest meaning and say so. A grammatical but literal sentence is `IMPROVABLE`.
+
 ## Feedback
 
 - **Get feedback** saves the body and asks the tutor to review it. The tutor splits the entry into
