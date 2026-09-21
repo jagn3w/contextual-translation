@@ -13,6 +13,8 @@ class AccessCode < ApplicationRecord
   # Crockford's decoding rules for look-alike characters.
   LOOKALIKES = T.let({ "O" => "0", "I" => "1", "L" => "1" }.freeze, T::Hash[String, String])
 
+  has_many :diary_entries, dependent: :delete_all
+
   validates :label, presence: true, length: { maximum: 100 }
   validates :code_digest, presence: true, uniqueness: true
 

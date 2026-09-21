@@ -2,12 +2,15 @@ import { ApolloProvider, useApolloClient, useQuery } from "@apollo/client/react"
 import { useCallback, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { AccessGate } from "./components/AccessGate.tsx";
+import { AppShell } from "./components/AppShell.tsx";
 import { StatusScreen } from "./components/StatusScreen.tsx";
 import { ViewerDocument } from "./gql/graphql.ts";
 import { createApolloClient } from "./lib/apollo.ts";
 import { failureMessage } from "./lib/failureMessage.ts";
 import { describeRequestError } from "./lib/requestFailure.ts";
+import { useRoute } from "./lib/router.ts";
 import { signOut } from "./lib/session.ts";
+import { DiaryPage } from "./pages/DiaryPage.tsx";
 import { TranslatePage } from "./pages/TranslatePage.tsx";
 
 type Props = {
@@ -80,5 +83,24 @@ function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
 
   // The page shows nothing from the viewer itself; the query is still what restores the
   // session (design D4.2), and reaching here at all is what says there is one.
-  return <TranslatePage onSignOut={() => void handleSignOut()} />;
+  return <SignedIn onSignOut={() => void handleSignOut()} />;
+}
+
+/**
+ * The signed-in app: the shared header and whichever page the URL names. Only this component
+ * subscribes to the location, so navigating re-renders the pages without re-asking the server who
+ * we are.
+ */
+function SignedIn({ onSignOut }: { onSignOut: () => void }) {
+  const route = useRoute();
+  return (
+    <AppShell route={route} onSignOut={onSignOut}>
+      {/* Phrases stays mounted, only hidden, while the diary is open: a translation and its draft
+          are in-memory state, and a trip to the diary and back shouldn't cost them. */}
+      <div hidden={route.page !== "phrases"}>
+        <TranslatePage />
+      </div>
+      {route.page === "diary" && <DiaryPage entryId={route.entryId} />}
+    </AppShell>
+  );
 }

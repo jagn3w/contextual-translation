@@ -29,8 +29,8 @@ module Translation
     # the costliest reply that still carries readings, which is what this limit is bounding — and
     # the runner prints the seconds it took, so the cost of one such reply can be measured.
     # Settling the limit itself needs more than that one case: cases at several lengths, to find
-    # where the slowest reply starts to approach ClaudeTranslator::DEADLINE_SECONDS. Output tokens are not
-    # in the runner's report at all; ClaudeTranslator#log_usage writes them to the Rails log for
+    # where the slowest reply starts to approach Claude::MessageCaller::DEADLINE_SECONDS. Output tokens are not
+    # in the runner's report at all; Claude::MessageCaller#log_usage writes them to the Rails log for
     # the same run.
     FURIGANA_LIMIT = 2_000
 

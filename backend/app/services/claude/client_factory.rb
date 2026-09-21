@@ -14,7 +14,7 @@ module Claude
 
     AUDIENCE = "https://api.anthropic.com"
     IDENTITY_TOKEN_TTL_SECONDS = 900
-    # The SDK's own retries are off; ClaudeTranslator retries once, and never on timeouts (D2.2).
+    # The SDK's own retries are off; Claude::MessageCaller retries once, and never on timeouts (D2.2).
     TIMEOUT_SECONDS = 30.0
     # With explicit WIF credentials the SDK ignores these today, but any default-constructed
     # client (a console session, a future code path) would pick them up and bypass WIF — and their

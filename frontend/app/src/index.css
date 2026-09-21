@@ -37,6 +37,28 @@
      rgb(189,218,246) — 1.45:1 — and over the hover tint rgb(183,212,239) — 1.43:1. A ring nobody
      can see is the same as no ring, and keyboard users are the only ones who ever get it. */
   --color-focus: var(--color-accent);
+
+  /* The diary's sentence verdicts (docs/diary.md): a pale wash behind each sentence the tutor
+     marked, in the same quiet family as the rest of the page, and a deeper step of each for the
+     sentence whose card is open. The wash is never the only cue — each verdict also has its own
+     underline style and its name on the card and in the accessible name (WCAG 1.4.1) — so what
+     these answer to is the text rule: the learner's own words sit on them in --color-ink, and the
+     underline drawn in --color-frame-muted is the non-text mark (3:1).
+                                              ink     frame-muted
+     --color-verdict-wrong            #fde2e0  10.0:1   5.9:1
+     --color-verdict-wrong-open       #f9c5c1   8.0:1   4.7:1
+     --color-verdict-improvable       #fbecc6  10.5:1   6.2:1
+     --color-verdict-improvable-open  #f5d98c   8.9:1   5.2:1
+     --color-verdict-correct          #ddeedd  10.1:1   6.0:1
+     --color-verdict-correct-open     #bfdfc0   8.5:1   5.0:1
+     all clear of WCAG AA's 4.5:1 for the text and 3:1 for the underline. A resolved sentence drops
+     its wash and keeps a dotted --color-muted underline, 4.5:1 on --color-canvas. */
+  --color-verdict-wrong: #fde2e0;
+  --color-verdict-wrong-open: #f9c5c1;
+  --color-verdict-improvable: #fbecc6;
+  --color-verdict-improvable-open: #f5d98c;
+  --color-verdict-correct: #ddeedd;
+  --color-verdict-correct-open: #bfdfc0;
 }
 
 /* The focus indicator itself, written once, for controls whose only focus affordance it is: both

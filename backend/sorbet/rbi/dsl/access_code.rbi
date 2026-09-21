@@ -6,6 +6,7 @@
 
 
 class AccessCode
+  include GeneratedAssociationMethods
   include GeneratedAttributeMethods
   extend CommonRelationMethods
   extend GeneratedRelationMethods
@@ -407,6 +408,22 @@ class AccessCode
 
     sig { returns(::AccessCode) }
     def third_to_last!; end
+  end
+
+  module GeneratedAssociationMethods
+    # This method is created by ActiveRecord on the `AccessCode` class because it declared `has_many :diary_entries`.
+    # 🔗 [Rails guide for `has_many` association](https://guides.rubyonrails.org/association_basics.html#the-has-many-association)
+    sig { returns(::DiaryEntry::PrivateCollectionProxy) }
+    def diary_entries; end
+
+    sig { params(value: T::Enumerable[::DiaryEntry]).void }
+    def diary_entries=(value); end
+
+    sig { returns(T::Array[T.untyped]) }
+    def diary_entry_ids; end
+
+    sig { params(ids: T::Array[T.untyped]).returns(T::Array[T.untyped]) }
+    def diary_entry_ids=(ids); end
   end
 
   module GeneratedAssociationRelationMethods

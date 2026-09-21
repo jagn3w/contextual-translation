@@ -12,3 +12,12 @@ export const LANGUAGES: ReadonlyArray<LanguageOption> = [
 export function languageName(code: Language): string {
   return LANGUAGES.find((language) => language.code === code)?.name ?? code;
 }
+
+/**
+ * The BCP 47 tag for a `lang` attribute. Marking the learner's text with its language is what gets
+ * Japanese set in a Japanese font (not a Chinese fallback) and read by a screen reader's Japanese
+ * voice rather than spelled out by its English one.
+ */
+export function languageTag(code: Language): string {
+  return code.toLowerCase();
+}

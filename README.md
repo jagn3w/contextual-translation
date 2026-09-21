@@ -14,6 +14,7 @@ The design, decisions (D-numbers) and task list live in `design/` and are synced
 | `backend/schema.graphql` | The committed GraphQL schema — the type contract the frontend codegen reads |
 | `frontend/` | pnpm workspace; `frontend/app` is the Vite + React + TypeScript SPA |
 | `design/` | Design doc and tasks (jkb-synced) |
+| `docs/diary.md` | The Diary page: product rules and the backend/frontend GraphQL contract |
 
 ## Toolchain
 

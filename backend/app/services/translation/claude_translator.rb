@@ -25,21 +25,17 @@ module Translation
     # the reply still has to arrive inside the 30 s SDK timeout and the 55 s deadline, and keeping
     # it inside those is Prompt::FURIGANA_LIMIT's job, not this number's (design D2.2).
     MAX_TOKENS = 32_000
-    # Server-side refusal fallbacks: if the model declines, Anthropic retries on a substitute
-    # model chosen by refusal category.
-    FALLBACK_BETA = "server-side-fallback-2026-07-01"
-    # The whole translation, including the one retry, must finish inside CapRover's 60 s proxy
-    # timeout (design D2.2); a retry is only attempted if at least MIN_RETRY_SECONDS remain.
-    DEADLINE_SECONDS = 55.0
-    MIN_RETRY_SECONDS = 10.0
-    # Time kept back for the Claude call itself when waiting for credentials.
-    MIN_CALL_SECONDS = 10.0
+    # Kept here as well because the request below names it; the value is Claude::MessageCaller's.
+    FALLBACK_BETA = Claude::MessageCaller::FALLBACK_BETA
+
+    # Everything around the call itself — credentials, the one retry, the 55 s deadline, error
+    # mapping and usage logs — is Claude::MessageCaller's, shared with Diary::ClaudeTutor.
     sig do
       params(
         client: Anthropic::Client,
         model: String,
         effort: String,
-        logger: T.any(::Logger, ActiveSupport::BroadcastLogger),
+        logger: Claude::MessageCaller::Logger,
         sleeper: T.proc.params(seconds: Float).void,
         clock: T.proc.returns(Float)
       ).void
@@ -47,44 +43,30 @@ module Translation
     def initialize(client:, model: DEFAULT_MODEL, effort: DEFAULT_EFFORT, logger: Rails.logger,
                    sleeper: ->(seconds) { sleep(seconds) },
                    clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC).to_f })
-      @client = client
+      @caller = T.let(Claude::MessageCaller.new(client:, logger:, sleeper:, clock:), Claude::MessageCaller)
       @model = model
       @effort = effort
       @logger = logger
-      @sleeper = sleeper
-      @clock = clock
     end
 
     # Starts background credential refresh (WIF) so the first translation doesn't wait on it.
     # Called from Puma's after_booted hook in production.
     sig { void }
     def warm_up
-      credentials.start if credentials.respond_to?(:start)
+      @caller.warm_up
     end
 
     sig { override.params(request: Request).returns(Result) }
     def translate(request)
-      started = @clock.call
-      message = create_with_one_retry(request, started)
-      log_usage(message, started)
+      message = @caller.call("translation") { |timeout| create_message(request, timeout:) }
       result_from(message, request)
-    rescue StandardError => e
-      raise if e.is_a?(Translation::Error)
-
-      mapped = ClaudeErrorMapper.map(e)
-      raise e if mapped.nil?
-
-      log_failure(e, mapped)
-      raise mapped
     end
 
     private
 
-    # Always pass an explicit timeout: with empty request options the beta endpoint ignores the
-    # client's 30 s and uses 600 s (anthropic 1.71, Beta::Messages#create).
     sig { params(request: Request, timeout: Float).returns(Anthropic::Models::Beta::BetaMessage) }
     def create_message(request, timeout:)
-      @client.beta.messages.create(
+      @caller.client.beta.messages.create(
         model: @model,
         max_tokens: MAX_TOKENS,
         system_: Prompt::SYSTEM,
@@ -97,77 +79,6 @@ module Translation
         betas: [ FALLBACK_BETA ],
         request_options: { timeout: }
       )
-    end
-
-    # One retry for rate limits and server errors, never for timeouts: a timed-out request is
-    # already as slow as the user will tolerate (design D2.2). The retry only happens if it can
-    # finish inside the overall deadline, and gets just the time that's left. The SDK's own
-    # retries are off.
-    #
-    # A 401 also gets that one retry with WIF credentials: the token was revoked or rotated, so
-    # the refresher fetches a newer one than the token this request actually sent (unless it
-    # already has), and the retry sends that. If the refresh fails, nothing is left pending for
-    # the next request. If Claude rejects the replacement too, the refresher backs off and
-    # requests fail fast, rather than each forcing another exchange.
-    sig { params(request: Request, started: Float).returns(Anthropic::Models::Beta::BetaMessage) }
-    def create_with_one_retry(request, started)
-      refresher = token_refresher
-      await_credentials(started)
-      begin
-        create_message(request, timeout: call_timeout(started))
-      rescue Anthropic::Errors::AuthenticationError => e
-        rejected = refresher&.generation_sent
-        raise e if rejected.nil? || remaining_seconds(started) < MIN_RETRY_SECONDS
-
-        @logger.warn("Claude 401 (request_id=#{e.request_id}); refreshing credentials and retrying once")
-        await_credentials(started, after: rejected)
-        create_message(request, timeout: call_timeout(started))
-      rescue Anthropic::Errors::RateLimitError, Anthropic::Errors::InternalServerError => e
-        raise e if e.is_a?(Anthropic::Errors::RateLimitError) &&
-          ClaudeErrorMapper.error_code(e) == ClaudeErrorMapper::TIER_SPEND_CAP_CODE
-
-        delay = retry_delay(e)
-        raise e if remaining_seconds(started) - delay < MIN_RETRY_SECONDS
-
-        @logger.warn("Claude #{e.status} (request_id=#{e.request_id}); retrying once")
-        @sleeper.call(delay)
-        await_credentials(started)
-        create_message(request, timeout: call_timeout(started))
-      end
-    end
-
-    # With WIF credentials, waits for a usable token (keeping MIN_CALL_SECONDS of the deadline
-    # for the Claude call); with `after`, for a newer token than that generation. A no-op for
-    # API-key clients.
-    sig { params(started: Float, after: T.nilable(Integer)).void }
-    def await_credentials(started, after: nil)
-      token_refresher&.await_token(timeout: remaining_seconds(started) - MIN_CALL_SECONDS, after:)
-    end
-
-    sig { returns(T.nilable(Claude::TokenRefresher)) }
-    def token_refresher
-      refresher = credentials
-      refresher.is_a?(Claude::TokenRefresher) ? refresher : nil
-    end
-
-    sig { params(started: Float).returns(Float) }
-    def call_timeout(started)
-      [ remaining_seconds(started), Claude::ClientFactory::TIMEOUT_SECONDS ].min
-    end
-
-    sig { params(started: Float).returns(Float) }
-    def remaining_seconds(started)
-      DEADLINE_SECONDS - (@clock.call - started)
-    end
-
-    sig { returns(T.untyped) }
-    def credentials
-      T.unsafe(@client).credentials
-    end
-
-    sig { params(error: Anthropic::Errors::APIStatusError).returns(Float) }
-    def retry_delay(error)
-      [ ClaudeErrorMapper.retry_after(error) || 1, 5 ].min.to_f
     end
 
     sig { params(message: Anthropic::Models::Beta::BetaMessage, request: Request).returns(Result) }
@@ -291,24 +202,6 @@ module Translation
       reading = entry["reading"]
       Gloss.new(text:, reading: reading.is_a?(String) ? reading.presence : nil, meaning:,
         starts_at:, length: text.length)
-    end
-
-    sig { params(message: Anthropic::Models::Beta::BetaMessage, started: Float).void }
-    def log_usage(message, started)
-      elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
-      usage = message.usage
-      @logger.info(
-        "Claude translation model=#{message.model} stop=#{message.stop_reason} ms=#{elapsed_ms} " \
-        "input_tokens=#{usage.input_tokens} output_tokens=#{usage.output_tokens}"
-      )
-    end
-
-    sig { params(error: StandardError, mapped: Error).void }
-    def log_failure(error, mapped)
-      request_id = error.respond_to?(:request_id) ? error.public_send(:request_id) : nil
-      level = [ ErrorCode::SERVICE_MISCONFIGURED, ErrorCode::BUDGET_EXCEEDED ].include?(mapped.code) ? :error : :warn
-      @logger.public_send(level, "Claude translation failed code=#{mapped.code.serialize} " \
-                                 "error=#{error.class} request_id=#{request_id.inspect}: #{error.message.truncate(300)}")
     end
   end
 end

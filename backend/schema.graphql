@@ -1,3 +1,204 @@
+input CreateDiaryEntryInput {
+  language: Language!
+  notesLanguage: Language!
+}
+
+input DeleteDiaryEntryInput {
+  id: ID!
+}
+
+type DeleteDiaryEntryPayload {
+  deletedId: ID
+}
+
+"""
+Who wrote a diary comment.
+"""
+enum DiaryAuthor {
+  """
+  The person writing the diary.
+  """
+  LEARNER
+
+  """
+  Claude, as the tutor.
+  """
+  TUTOR
+}
+
+type DiaryComment {
+  author: DiaryAuthor!
+  body: String!
+  createdAt: ISO8601DateTime!
+  id: ID!
+}
+
+"""
+One diary entry, private to the access code that wrote it.
+"""
+type DiaryEntry {
+  body: String!
+  createdAt: ISO8601DateTime!
+  id: ID!
+
+  """
+  The language the entry is written in.
+  """
+  language: Language!
+
+  """
+  The learner's own language: feedback, tips, hints and replies are written in it.
+  """
+  notesLanguage: Language!
+
+  """
+  The first ~12 words of `body` (~40 characters for Japanese), with "…" when cut. Empty when the body is.
+  """
+  preview: String!
+  reviewedAt: ISO8601DateTime
+
+  """
+  The body as it was last reviewed; thread spans point into it. Null until the first review.
+  """
+  reviewedBody: String
+
+  """
+  In creation order.
+  """
+  threads: [DiaryThread!]!
+  updatedAt: ISO8601DateTime!
+}
+
+type DiaryEntryPayload {
+  """
+  Null when errors is non-empty.
+  """
+  entry: DiaryEntry
+  errors: [TranslateError!]!
+}
+
+"""
+A tutor thread on a diary entry: a sentence's verdict, an entry-wide note, or a "Help me say…" question.
+"""
+type DiaryThread {
+  """
+  Oldest first.
+  """
+  comments: [DiaryComment!]!
+  createdAt: ISO8601DateTime!
+
+  """
+  False for SENTENCE threads superseded by a later review.
+  """
+  current: Boolean!
+
+  """
+  HELP: how many general hints have been given.
+  """
+  hintLevel: Int!
+  id: ID!
+  kind: DiaryThreadKind!
+
+  """
+  The sentence's length in Unicode code points, with `startsAt`.
+  """
+  length: Int
+  resolved: Boolean!
+
+  """
+  SENTENCE: the sentence as reviewed. HELP: the question.
+  """
+  sentence: String
+
+  """
+  SENTENCE: where the sentence starts in `reviewedBody`, in Unicode code points. Null when it could not be located.
+  """
+  startsAt: Int
+
+  """
+  ENTRY only.
+  """
+  title: String
+
+  """
+  SENTENCE only.
+  """
+  verdict: DiaryVerdict
+}
+
+"""
+What a diary thread is about.
+"""
+enum DiaryThreadKind {
+  """
+  An entry-wide note from a review.
+  """
+  ENTRY
+
+  """
+  A "Help me say…" question and its hints.
+  """
+  HELP
+
+  """
+  The tutor's verdict on one sentence of a review.
+  """
+  SENTENCE
+}
+
+type DiaryThreadPayload {
+  errors: [TranslateError!]!
+
+  """
+  Null when errors is non-empty.
+  """
+  thread: DiaryThread
+}
+
+"""
+An idea to write about.
+"""
+type DiaryTopic {
+  """
+  Its meaning, in the notes language.
+  """
+  gloss: String!
+
+  """
+  The prompt, in the entry's language.
+  """
+  prompt: String!
+}
+
+type DiaryTopicsPayload {
+  errors: [TranslateError!]!
+
+  """
+  Empty when errors is non-empty.
+  """
+  topics: [DiaryTopic!]!
+}
+
+"""
+The tutor's verdict on one sentence of a diary entry.
+"""
+enum DiaryVerdict {
+  """
+  Right, and reads naturally.
+  """
+  CORRECT
+
+  """
+  Understandable but unnatural or not quite the right word.
+  """
+  IMPROVABLE
+
+  """
+  Has a mistake of grammar, vocabulary, spelling or meaning.
+  """
+  WRONG
+}
+
 """
 A word of the translation with a short definition, for the UI to show on hover (design D2.3).
 """
@@ -74,14 +275,69 @@ enum Language {
 }
 
 type Mutation {
+  createDiaryEntry(input: CreateDiaryEntryInput!): DiaryEntryPayload!
+  deleteDiaryEntry(input: DeleteDiaryEntryInput!): DeleteDiaryEntryPayload!
+  replyToDiaryThread(input: ReplyToDiaryThreadInput!): DiaryThreadPayload!
+  requestDiaryHint(input: RequestDiaryHintInput!): DiaryThreadPayload!
+  resolveDiaryThread(input: ResolveDiaryThreadInput!): DiaryThreadPayload!
+  reviewDiaryEntry(input: ReviewDiaryEntryInput!): DiaryEntryPayload!
+  startDiaryHelpThread(input: StartDiaryHelpThreadInput!): DiaryThreadPayload!
+  suggestDiaryTopics(input: SuggestDiaryTopicsInput!): DiaryTopicsPayload!
   translate(input: TranslateInput!): TranslatePayload!
+  updateDiaryEntry(input: UpdateDiaryEntryInput!): DiaryEntryPayload!
 }
 
 type Query {
   """
+  This access code's diary entries, newest first.
+  """
+  diaryEntries: [DiaryEntry!]!
+
+  """
+  Null when missing or not this access code's.
+  """
+  diaryEntry(id: ID!): DiaryEntry
+
+  """
   The signed-in session.
   """
   viewer: Viewer!
+}
+
+input ReplyToDiaryThreadInput {
+  body: String!
+  threadId: ID!
+}
+
+input RequestDiaryHintInput {
+  """
+  A HELP thread.
+  """
+  threadId: ID!
+}
+
+input ResolveDiaryThreadInput {
+  resolved: Boolean!
+  threadId: ID!
+}
+
+input ReviewDiaryEntryInput {
+  body: String!
+  id: ID!
+}
+
+input StartDiaryHelpThreadInput {
+  entryId: ID!
+
+  """
+  What the learner wants to say, in their own language.
+  """
+  question: String!
+}
+
+input SuggestDiaryTopicsInput {
+  language: Language!
+  notesLanguage: Language!
 }
 
 """
@@ -241,6 +497,21 @@ type Translation {
   sourceLanguage: Language!
   targetLanguage: Language!
   text: String!
+}
+
+input UpdateDiaryEntryInput {
+  body: String
+  id: ID!
+
+  """
+  Only while the entry has never been reviewed.
+  """
+  language: Language
+
+  """
+  Only while the entry has never been reviewed.
+  """
+  notesLanguage: Language
 }
 
 """
