@@ -524,12 +524,12 @@ input UpdateDiaryEntryInput {
   id: ID!
 
   """
-  Only while the entry has never been reviewed.
+  Only until the entry's first review or thread; afterwards the change raises INVALID.
   """
   language: Language
 
   """
-  Only while the entry has never been reviewed.
+  Only until the entry's first review or thread; afterwards the change raises INVALID.
   """
   notesLanguage: Language
 }

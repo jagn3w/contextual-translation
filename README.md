@@ -4,7 +4,11 @@ Translation that takes context into account. Tell Claude *where* you are and *wh
 talking to, and it picks the right meaning ("Is this a bat?" at a baseball game), the right
 formality (Spanish *tú*/*usted*, Japanese plain/polite/honorific) and the right regional variety.
 
-The design, decisions (D-numbers) and task list live in `design/` and are synced with jkb.
+How it works is written up in `docs/`: start with [docs/backend.md](docs/backend.md),
+[docs/frontend.md](docs/frontend.md) and [docs/api_boundary.md](docs/api_boundary.md), then the two
+features, [docs/phrases.md](docs/phrases.md) and [docs/diary.md](docs/diary.md). Code comments that
+cite design decision numbers ("design D2.3") refer to a design document kept outside this
+repository.
 
 ## Layout
 
@@ -13,8 +17,12 @@ The design, decisions (D-numbers) and task list live in `design/` and are synced
 | `backend/` | Rails 8 API: GraphQL (`graphql-ruby`), Sorbet `typed: strict`, Postgres |
 | `backend/schema.graphql` | The committed GraphQL schema — the type contract the frontend codegen reads |
 | `frontend/` | pnpm workspace; `frontend/app` is the Vite + React + TypeScript SPA |
-| `design/` | Design doc and tasks (jkb-synced) |
+| `docs/backend.md` | The Rails side: request pipeline, access codes, abuse controls, services, the shared Claude client, database, conventions |
+| `docs/frontend.md` | The SPA: structure, routing, session lifecycle, data layer, styling, accessibility, testing |
+| `docs/api_boundary.md` | The GraphQL schema as the type contract, the error model, limits, transport and auth |
+| `docs/phrases.md` | The Phrases translator end to end |
 | `docs/diary.md` | The Diary page: product rules and the backend/frontend GraphQL contract |
+| `docs/runbook.md` | Standing up production |
 
 ## Toolchain
 
@@ -90,7 +98,7 @@ curl -c jar -b jar -H 'Origin: http://localhost:5173' -H 'Content-Type: applicat
 
 ### Translation eval
 
-`backend/eval/cases.yml` holds 18 cases covering ambiguity ("bat" at a ballpark vs a cave),
+`backend/eval/cases.yml` holds 19 cases covering ambiguity ("bat" at a ballpark vs a cave),
 formality (Spanish *usted*/*tú*, Japanese keigo) and regional vocabulary (Spain vs Mexico), plus a
 prompt-injection check. Run them against Claude (this costs money):
 
@@ -109,7 +117,7 @@ After adding or upgrading gems, regenerate type information with `bin/tapioca ge
 ```sh
 cd frontend
 pnpm install
-pnpm dev                        # http://localhost:5173 — proxies /api and /graphql to Rails on :3000
+pnpm dev                        # http://localhost:5173 — proxies /api, /graphql and /up to Rails on :3000
 ```
 
 Checks: `pnpm typecheck`, `pnpm test` (Vitest), `pnpm build`.

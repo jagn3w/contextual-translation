@@ -134,9 +134,9 @@ export type TranslateInput = {
 export type UpdateDiaryEntryInput = {
   body?: string | null | undefined;
   id: string | number;
-  /** Only while the entry has never been reviewed. */
+  /** Only until the entry's first review or thread; afterwards the change raises INVALID. */
   language?: Language | null | undefined;
-  /** Only while the entry has never been reviewed. */
+  /** Only until the entry's first review or thread; afterwards the change raises INVALID. */
   notesLanguage?: Language | null | undefined;
 };
 

@@ -8,8 +8,8 @@ module Types
     argument :id, ID
     argument :body, String, required: false
     argument :language, Types::LanguageType, required: false,
-      description: "Only while the entry has never been reviewed."
+      description: "Only until the entry's first review or thread; afterwards the change raises INVALID."
     argument :notes_language, Types::LanguageType, required: false,
-      description: "Only while the entry has never been reviewed."
+      description: "Only until the entry's first review or thread; afterwards the change raises INVALID."
   end
 end

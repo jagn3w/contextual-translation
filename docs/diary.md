@@ -179,7 +179,7 @@ error, code `INVALID`); a pair of one language twice is a
 `SAME_LANGUAGE` error in the payload. An entry can be deleted from its header, after a
 confirmation. Bare `/diary` shows a prompt to choose or start an entry.
 
-A missing or foreign id raises a top-level GraphQL error with `extensions.code = "NOT_FOUND"`, and
-so does a tutor mutation whose entry or thread was deleted while the tutor was answering.
+`diaryEntry(id)` returns null for a missing or foreign id. A mutation given one raises a top-level
+GraphQL error with `extensions.code = "NOT_FOUND"`, and so does a tutor mutation whose entry or thread was deleted while the tutor was answering.
 Mutations that call the tutor carry complexity 100, like `translate`, so one request makes at most
 one tutor call.
