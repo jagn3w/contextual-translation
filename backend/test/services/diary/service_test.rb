@@ -289,7 +289,196 @@ class Diary::ServiceTest < ActiveSupport::TestCase
     assert_equal 4, hinted.comments.size
   end
 
+  test "two overlapping reviews get consecutive rounds, not the same one" do
+    session = @session
+    entry_id = @entry.id
+    told = []
+    tutor = Diary::FakeTutor.new
+    tutor.define_singleton_method(:review) do |request|
+      told << request.round
+      # A second tab's review of the same entry, saved while this one waits for the tutor.
+      if told.size == 1
+        Diary::Service.new(tutor: Diary::FakeTutor.new, rate_limiter: Translation::RateLimiter.new)
+          .review(DiaryEntry.find(entry_id), "Uno.", session:)
+      end
+      Diary::FakeTutor.new.review(request)
+    end
+
+    service(tutor).review(@entry, "Dos. Tres.", session:)
+
+    assert_equal [ 1 ], told, "the tutor was told round 1; the round saved counts up from the locked row"
+    assert_equal 2, @entry.reload.review_count
+    rounds = @entry.threads.where(kind: "sentence").group_by(&:review_round).transform_values { |threads| threads.map(&:sentence) }
+    assert_equal({ 1 => [ "Uno." ], 2 => [ "Dos.", "Tres." ] }, rounds)
+    assert_equal [ 1, 2 ], @entry.threads.where(kind: "entry").map(&:review_round)
+    assert_equal [ 2 ], @entry.threads.where(kind: "sentence", current: true).pluck(:review_round).uniq
+  end
+
+  test "two overlapping hint requests count two hints, not the same level twice" do
+    help = @service.start_help_thread(@entry, "How do I say hi?", session: @session)
+    session = @session
+    told = []
+    tutor = Diary::FakeTutor.new
+    tutor.define_singleton_method(:hint) do |request|
+      told << request.level
+      if told.size == 1
+        Diary::Service.new(tutor: Diary::FakeTutor.new, rate_limiter: Translation::RateLimiter.new)
+          .request_hint(DiaryThread.find(help.id), session:)
+      end
+      Diary::FakeTutor.new.hint(request)
+    end
+
+    hinted = service(tutor).request_hint(help, session:)
+
+    assert_equal [ 2 ], told
+    assert_equal 3, hinted.hint_level, "the level saved counts up from the locked row, not the level asked for"
+    assert_equal 3, hinted.comments.size
+  end
+
+  test "an overlapping clarifying answer leaves the level another request raised" do
+    help = @service.start_help_thread(@entry, "How do I say hi?", session: @session)
+    session = @session
+    tutor = Diary::FakeTutor.new
+    tutor.define_singleton_method(:hint) do |_request|
+      Diary::Service.new(tutor: Diary::FakeTutor.new, rate_limiter: Translation::RateLimiter.new)
+        .request_hint(DiaryThread.find(help.id), session:)
+      Diary::Tutor::Hint.new(text: "Which do you mean?", clarifying: true)
+    end
+
+    assert_equal 2, service(tutor).request_hint(help, session:).hint_level
+  end
+
+  test "a long thread is sent as its first comment, a marker and the latest comments" do
+    help = @service.start_help_thread(@entry, "How do I say hi?", session: @session)
+    12.times { |index| help.comments.create!(author: index.even? ? "learner" : "tutor", body: "c#{index}") }
+    recorded = []
+    tutor = Diary::FakeTutor.new
+    tutor.define_singleton_method(:reply) { |request| recorded << request.thread; "ok" }
+    tutor.define_singleton_method(:hint) { |request| recorded << request; Diary::FakeTutor.new.hint(request) }
+    service = service(tutor)
+    first = help.comments.first.body
+    kept = Diary::Service::MAX_THREAD_COMMENTS
+
+    # 14 comments with the new one: the first hint, c0..c11 and "new".
+    service.reply(help.reload, "new", session: @session)
+    sent = recorded.shift
+    assert_equal [ first, *(12 - kept + 1..11).map { |index| "c#{index}" }, "new" ], sent.comments.map(&:body)
+    assert_equal 14 - 1 - kept, sent.omitted, "every comment between the first and the kept ones is counted"
+    assert_includes Diary::Prompt.thread_block(sent, nil), %(<comment author="you">#{first}</comment>\n<omitted count="#{sent.omitted}"/>)
+
+    help.reload
+    level = help.hint_level
+    total = help.comments.size
+    service.request_hint(help, session: @session)
+    request = recorded.shift
+    assert_equal level + 1, request.level, "the ladder follows hint_level, not the comments still in view"
+    assert_equal first, request.comments.first.body
+    assert_equal kept + 1, request.comments.size
+    assert_equal total - 1 - kept, request.omitted
+    assert_includes Diary::Prompt.hint_message(request), %(<omitted count="#{request.omitted}"/>)
+  end
+
+  test "a short thread is sent whole, without a marker" do
+    help = @service.start_help_thread(@entry, "How do I say hi?", session: @session)
+    (Diary::Service::MAX_THREAD_COMMENTS - 1).times { help.comments.create!(author: "learner", body: "more") }
+
+    sent = Diary::Service.context_thread(help.reload, extra: Diary::Tutor::Comment.new(author: Diary::Author::LEARNER, body: "new"))
+
+    assert_equal Diary::Service::MAX_THREAD_COMMENTS + 1, sent.comments.size
+    assert_equal 0, sent.omitted
+    assert_not_includes Diary::Prompt.thread_block(sent, nil), "<omitted"
+  end
+
+  test "the review context drops the oldest threads beyond the character cap and logs only counts" do
+    @entry.update!(review_count: 1)
+    size = Diary::Service::MAX_CONTEXT_CHARS / 3
+    threads = Array.new(4) do
+      thread(round: 1).tap { |record| record.comments.create!(author: "tutor", body: "x" * (size - 1)) }
+    end
+    log = StringIO.new
+
+    context = Diary::Service.review_context(@entry.reload, logger: ActiveSupport::Logger.new(log))
+
+    # Each thread is `size` characters (its one-character sentence and its comment), so three fit.
+    assert_equal threads.last(3).map(&:id), context.map(&:id)
+    assert_equal "Diary review context over #{Diary::Service::MAX_CONTEXT_CHARS} characters: dropped 1 of 4 threads\n",
+      log.string
+    assert_not_includes log.string, "xxx"
+  end
+
+  test "a review or help answer for a language pair the entry no longer has is refused and saves nothing" do
+    entry_id = @entry.id
+    switch = -> { DiaryEntry.find(entry_id).update!(language: "ja") }
+    tutor = Diary::FakeTutor.new
+    tutor.define_singleton_method(:review) { |request| switch.().then { Diary::FakeTutor.new.review(request) } }
+    tutor.define_singleton_method(:hint) { |request| switch.().then { Diary::FakeTutor.new.hint(request) } }
+    service = service(tutor)
+
+    error = assert_raises(Diary::Service::Invalid) { service.review(@entry, "Hola.", session: @session) }
+    assert_equal "The languages changed while Claude was answering — try again.", error.message
+    @entry.reload.update!(language: "es")
+    assert_raises(Diary::Service::Invalid) { service.start_help_thread(@entry, "How do I say hi?", session: @session) }
+
+    @entry.reload
+    assert_equal [ "ja", "", nil, 0 ], [ @entry.language, @entry.body, @entry.reviewed_at, @entry.review_count ]
+    assert_empty @entry.threads
+    assert_nothing_raised { @service.update_entry(@entry, language: Translation::Language::ES) }
+  end
+
+  test "a reply or hint for a language pair the entry no longer has is refused and saves nothing" do
+    help = @service.start_help_thread(@entry, "How do I say hi?", session: @session)
+    entry_id = @entry.id
+    # update_entry refuses this once a thread exists; the check is a backstop for a row changed anyway.
+    switch = -> { DiaryEntry.find(entry_id).update_column(:notes_language, "ja") }
+    tutor = Diary::FakeTutor.new
+    tutor.define_singleton_method(:reply) { |request| switch.().then { Diary::FakeTutor.new.reply(request) } }
+    tutor.define_singleton_method(:hint) { |request| switch.().then { Diary::FakeTutor.new.hint(request) } }
+    service = service(tutor)
+
+    assert_raises(Diary::Service::Invalid) { service.reply(help, "Why?", session: @session) }
+    @entry.update_column(:notes_language, "en")
+    assert_raises(Diary::Service::Invalid) { service.request_hint(help.reload, session: @session) }
+
+    help.reload
+    assert_equal [ 1, 1 ], [ help.hint_level, help.comments.count ]
+  end
+
+  test "deleting an entry locks its row before removing its threads, like a review saving its answer" do
+    help = @service.start_help_thread(@entry, "How do I say it rained?", session: @session)
+    # What an overlapping delete request would hold: the same entry, loaded before this one landed.
+    stale = DiaryEntry.find(@entry.id)
+    locked_before_threads_went = nil
+    @entry.define_singleton_method(:lock!) do |*args|
+      locked_before_threads_went = DiaryThread.exists?(help.id)
+      super(*args)
+    end
+
+    @service.delete_entry(@entry)
+
+    assert locked_before_threads_went, "the entry is locked while its threads still exist"
+    assert_not DiaryEntry.exists?(@entry.id)
+    assert_not DiaryThread.exists?(help.id)
+    error = assert_raises(Diary::Service::NotFound) { @service.delete_entry(stale) }
+    assert_equal "diary entry", error.message
+  end
+
+  test "changing the languages checks for feedback under the entry's row lock" do
+    locked = false
+    @entry.define_singleton_method(:lock!) { |*args| locked = true; super(*args) }
+
+    @service.update_entry(@entry, language: Translation::Language::JA)
+
+    assert locked
+    DiaryEntry.find(@entry.id).destroy!
+    error = assert_raises(Diary::Service::NotFound) { @service.update_entry(@entry, body: "Hola.") }
+    assert_equal "diary entry", error.message
+  end
+
   private
+
+  def service(tutor)
+    Diary::Service.new(tutor:, rate_limiter: Translation::RateLimiter.new(cache: @cache))
+  end
 
   def thread(round:, kind: Diary::ThreadKind::SENTENCE, resolved: false, current: true)
     @entry.threads.create!(

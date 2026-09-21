@@ -1,6 +1,9 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ApolloClient } from "@apollo/client";
 import { App } from "../App.tsx";
+import { createApolloClient } from "../lib/apollo.ts";
+import { unsavedDraft } from "../lib/unsavedDrafts.ts";
 import { diaryErrorMessage } from "./DiaryPage.tsx";
 import { entry, localIso } from "../test/diaryFixtures.ts";
 import { type FakeDiary, installFakeDiary } from "../test/fakeDiary.ts";
@@ -320,6 +323,29 @@ describe("DiaryPage", () => {
     expect(screen.getByLabelText("Diary entry")).toHaveValue("朝ご飯を食べました。");
   });
 
+  it("says the languages changed while Claude was answering, keeping the entry's text", async () => {
+    const { user } = await openDiary(`/diary/${MORNING_ID}`, [MORNING]);
+    await screen.findByLabelText("Diary entry");
+    server.onGraphql("ReviewDiaryEntry", () =>
+      json({
+        data: null,
+        errors: [
+          {
+            message: "The languages changed while Claude was answering — try again.",
+            extensions: { code: "INVALID" },
+          },
+        ],
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Get feedback" }));
+
+    expect(
+      await screen.findByText("The languages changed while Claude was answering — try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Diary entry")).toHaveValue("朝ご飯を食べました。");
+  });
+
   it("says the languages can't change once an entry has had feedback elsewhere", async () => {
     const empty = entry({ body: "", preview: "" });
     const { user, diary } = await openDiary(`/diary/${empty.id}`, [empty]);
@@ -328,7 +354,9 @@ describe("DiaryPage", () => {
 
     await pick(user, "Writing in", /Spanish/);
 
-    expect(await screen.findByText("The languages can't change once an entry has had feedback.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("An entry's languages can't be changed once it has had feedback or help."),
+    ).toBeInTheDocument();
     expect(diary.find(empty.id)?.language).toBe("JA");
   });
 
@@ -404,6 +432,49 @@ describe("DiaryPage", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.getByLabelText("Access code")).toBeInTheDocument();
     expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
+  });
+
+  it("forgets one access code's diary and drafts when its session ends, before another code signs in", async () => {
+    // Code A has an entry open with a draft its autosave hasn't sent yet.
+    window.history.replaceState(null, "", `/diary/${MORNING_ID}`);
+    let session: "A" | "B" | null = "A";
+    server.onGraphql("Viewer", () => (session === null ? unauthenticated() : viewer()));
+    server.onSession("POST", () => {
+      session = "B";
+      return new Response(null, { status: 204 });
+    });
+    installFakeDiary(server, [MORNING]);
+    let client: ApolloClient | undefined;
+    const user = userEvent.setup();
+    render(<App createClient={(options) => (client = createApolloClient(options))} />);
+    await user.type(await screen.findByLabelText("Diary entry"), "美味しかった。");
+    expect(unsavedDraft(MORNING_ID)).toBe("朝ご飯を食べました。美味しかった。");
+
+    // A's session ends elsewhere (expired, revoked, signed out in another tab): the autosave is refused.
+    session = null;
+    server.onGraphql("SaveDiaryEntry", unauthenticated);
+    expect(await screen.findByText(/session ended/i, {}, { timeout: 3000 })).toBeInTheDocument();
+
+    // Nothing of A's is left in memory, and the wipe cancelled nothing loudly.
+    expect(client?.extract()).toEqual({});
+    expect(unsavedDraft(MORNING_ID)).toBeUndefined();
+    expect(screen.queryByText(/朝ご飯/)).not.toBeInTheDocument();
+
+    // Code B signs in on the same tab; the server answers B's own diary.
+    const listRequestsBefore = requestsFor("DiaryEntries").length;
+    installFakeDiary(server, [EVENING]);
+    await user.type(screen.getByLabelText("Access code"), "ctx-B");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    const entries = within(await screen.findByRole("navigation", { name: "Diary entries" }));
+    expect(await entries.findByRole("link", { name: /Hoy fui al cine/ })).toBeInTheDocument();
+    expect(await screen.findByText("This entry doesn't exist, or belongs to another access code.")).toBeInTheDocument();
+    expect(requestsFor("DiaryEntries").length).toBeGreaterThan(listRequestsBefore);
+    expect(screen.queryByText(/朝ご飯/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/美味しかった/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Diary entry")).not.toBeInTheDocument();
+    expect(unsavedDraft(MORNING_ID)).toBeUndefined();
+    expect(screen.queryByText(/Something unexpected/)).not.toBeInTheDocument();
   });
 
   it("treats a malformed entry URL as an entry that doesn't exist", async () => {

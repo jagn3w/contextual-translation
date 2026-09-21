@@ -1,5 +1,5 @@
-import { ApolloProvider, useApolloClient, useQuery } from "@apollo/client/react";
-import { useCallback, useRef, useState } from "react";
+import { ApolloProvider, useQuery } from "@apollo/client/react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { AccessGate } from "./components/AccessGate.tsx";
 import { AppShell } from "./components/AppShell.tsx";
@@ -10,7 +10,7 @@ import { failureMessage } from "./lib/failureMessage.ts";
 import { describeRequestError } from "./lib/requestFailure.ts";
 import { useRoute } from "./lib/router.ts";
 import { signOut } from "./lib/session.ts";
-import { forgetDrafts } from "./lib/unsavedDrafts.ts";
+import { wipeSessionState } from "./lib/sessionState.ts";
 import { flushAutosaves } from "./lib/useAutosave.ts";
 import { DiaryPage } from "./pages/DiaryPage.tsx";
 import { TranslatePage } from "./pages/TranslatePage.tsx";
@@ -19,35 +19,63 @@ type Props = {
   createClient?: typeof createApolloClient;
 };
 
+/** Why the session changed hands: each one wipes the client's copy of the old session first. */
+type Restart = "signedIn" | "signedOut" | "sessionEnded";
+
 /**
  * Owns the Apollo client and the session lifecycle. Bumping `epoch` remounts SessionBoundary,
  * which re-asks the server who we are — after sign-in, sign-out, or a session ending mid-use.
+ *
+ * Every restart goes through `wiping` first: the signed-in tree unmounts, `wipeSessionState` forgets
+ * the unsaved drafts and clears the Apollo cache, and only then is the epoch bumped. So the next
+ * session — possibly another access code's, on the same tab — never sees the last one's entries or
+ * drafts, whether it ended by signing out, by expiring or being revoked, or by a sign-out in another
+ * tab. Unmounting before the wipe matters: `clearStore` cancels in-flight queries, and a mounted
+ * query would show the cancellation as an error. Nothing is persisted, so this is all there is.
  */
 export function App({ createClient = createApolloClient }: Props) {
   const [epoch, setEpoch] = useState(0);
   const [sessionEnded, setSessionEnded] = useState(false);
-  // Set by a deliberate sign-out until the next sign-in. A request still out when the session was
-  // deleted comes back unauthenticated, and that is no news to someone who just signed out: it must
-  // not replace the gate with "Your session ended".
-  const signedOut = useRef(false);
+  const [wiping, setWiping] = useState<Restart | null>(null);
+  // Set when there is no session, by a deliberate sign-out or a session ending, until the next
+  // sign-in. A request still out when the session went comes back unauthenticated, and that is no
+  // news: after a sign-out it must not replace the gate with "Your session ended", and after an
+  // ended session it must not wipe and restart a second time.
+  const sessionGone = useRef(false);
+  const restart = useCallback((reason: Restart) => {
+    sessionGone.current = reason !== "signedIn";
+    setWiping(reason);
+  }, []);
   const [client] = useState(() =>
     createClient({
       onUnauthenticated: () => {
-        if (signedOut.current) return;
-        setSessionEnded(true);
-        setEpoch((value) => value + 1);
+        if (sessionGone.current) return;
+        // Whatever was typed since the last autosave is lost with the session: there is no session
+        // left to save it to.
+        restart("sessionEnded");
       },
     }),
   );
-  const restart = useCallback((reason: "signedIn" | "signedOut") => {
-    signedOut.current = reason === "signedOut";
-    setSessionEnded(false);
-    setEpoch((value) => value + 1);
-  }, []);
+
+  useEffect(() => {
+    if (wiping === null) return;
+    // Runs after the commit that unmounted the signed-in tree, so no query is left mounted.
+    void wipeSessionState(client)
+      .catch(() => undefined)
+      .then(() => {
+        setSessionEnded(wiping === "sessionEnded");
+        setEpoch((value) => value + 1);
+        setWiping(null);
+      });
+  }, [client, wiping]);
 
   return (
     <ApolloProvider client={client}>
-      <SessionBoundary key={epoch} sessionEnded={sessionEnded} onRestart={restart} />
+      {wiping === null ? (
+        <SessionBoundary key={epoch} sessionEnded={sessionEnded} onRestart={restart} />
+      ) : (
+        <StatusScreen message="Loading…" />
+      )}
       <Toaster position="bottom-center" closeButton toastOptions={{ duration: 8000 }} />
     </ApolloProvider>
   );
@@ -60,7 +88,6 @@ type BoundaryProps = {
 
 /** Restores the session on load via the Viewer query (design D4.2) and routes to the gate or the app. */
 function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
-  const client = useApolloClient();
   const { data, error, loading, refetch } = useQuery(ViewerDocument, { fetchPolicy: "network-only" });
 
   const handleSignOut = useCallback(async () => {
@@ -73,10 +100,9 @@ function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
       toast.error(`Couldn't sign out. ${failureMessage(result.reason)}`);
       return;
     }
-    forgetDrafts();
-    await client.clearStore();
+    // The restart wipes the drafts and the cache once this tree has unmounted.
     onRestart("signedOut");
-  }, [client, onRestart]);
+  }, [onRestart]);
 
   if (error) {
     const failure = describeRequestError(error);
@@ -84,6 +110,7 @@ function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
       return (
         <AccessGate
           notice={sessionEnded ? failureMessage(failure) : undefined}
+          // Wipes again on the way in, a backstop: nothing of an earlier session reaches this one.
           onSignedIn={() => onRestart("signedIn")}
         />
       );

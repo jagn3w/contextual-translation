@@ -31,6 +31,13 @@ module Mutations
       raise GraphQL::ExecutionError.new("No such #{what}.", extensions: { "code" => "NOT_FOUND" })
     end
 
+    # A change the entry's state refuses (Diary::Service::Invalid): its languages after feedback,
+    # or a tutor answer for a language pair the entry no longer has.
+    sig { params(message: String).returns(T.noreturn) }
+    def invalid!(message)
+      raise GraphQL::ExecutionError.new(message, extensions: { "code" => "INVALID" })
+    end
+
     sig { returns(Diary::Service) }
     def service
       Diary::Service.new

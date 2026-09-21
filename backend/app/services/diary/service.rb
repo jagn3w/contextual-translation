@@ -26,6 +26,21 @@ module Diary
     # The most threads one review sends the tutor as context, most recent first. Unresolved threads
     # from every round are kept, so without a cap the request would grow with the entry's history.
     MAX_CONTEXT_THREADS = 60
+    # How much of one thread's discussion a prompt carries: the first comment (the tutor's tip,
+    # note or first hint, which says what the thread is about) and the most recent
+    # MAX_THREAD_COMMENTS after it. The comments in between are left out and marked
+    # `<omitted count="k"/>` (Prompt.comment_lines), so a long discussion cannot keep growing the
+    # request until every attempt times out. An ESTIMATE, not measured: enough for the tutor to
+    # follow the current exchange, small enough that nine comments of MAX_COMMENT_LENGTH stay
+    # well inside a request.
+    MAX_THREAD_COMMENTS = 8
+    # The most characters of thread text (sentences, titles and the kept comments; tags not
+    # counted) one review sends as context. Threads are dropped oldest first until the rest fit.
+    # An ESTIMATE, not measured: room for one discussion at the MAX_THREAD_COMMENTS cap with every
+    # learner comment at MAX_COMMENT_LENGTH (9 x 2,000 = 18,000) beside dozens of ordinary threads.
+    # Input is read far faster than a reply is written, so this stops unbounded growth rather than
+    # saving seconds; to check it, read the input_tokens and duration logged for "diary review".
+    MAX_CONTEXT_CHARS = 30_000
     # How many recent entries the topic ideas steer away from.
     RECENT_ENTRIES = 5
 
@@ -44,6 +59,9 @@ module Diary
     # it as the same NOT_FOUND error a missing id gets.
     class NotFound < StandardError; end
 
+    # Raised (as Invalid) when a tutor answer arrives for a language pair the entry no longer has.
+    LANGUAGES_CHANGED = "The languages changed while Claude was answering — try again."
+
     sig do
       params(access_code: AccessCode, language: Translation::Language, notes_language: Translation::Language)
         .returns(DiaryEntry)
@@ -54,6 +72,18 @@ module Diary
     end
 
     # Saving a draft, and/or changing the language pair: no tutor call, and an empty body is fine.
+    # Deletes the entry with its threads and comments. The entry's row is locked first: a review
+    # saving its answer locks the entry and then writes its threads, so a delete that removed the
+    # threads before touching the entry would take the same locks in the opposite order and could
+    # deadlock with it. Locking the entry first makes one wait for the other.
+    sig { params(entry: DiaryEntry).void }
+    def delete_entry(entry)
+      DiaryEntry.transaction do
+        lock_or_not_found!(entry, "diary entry")
+        entry.destroy!
+      end
+    end
+
     # Nil leaves a field as it is. The pair is fixed once the entry has any thread — feedback or
     # a "Help me say…" question, which can come before any review — because they were written for it.
     sig do
@@ -62,15 +92,20 @@ module Diary
     end
     def update_entry(entry, body: nil, language: nil, notes_language: nil)
       validate_body!(body) if body
-      new_language = language || entry.language_enum
-      new_notes_language = notes_language || entry.notes_language_enum
-      changes_languages = new_language != entry.language_enum || new_notes_language != entry.notes_language_enum
-      if changes_languages && (entry.reviewed_at || entry.threads.exists?)
-        raise Invalid, "An entry's languages can't be changed once it has had feedback or help."
-      end
+      DiaryEntry.transaction do
+        # Under the row lock that a review or a new help thread takes to save its answer, so the
+        # check cannot pass just before one of them commits; they re-check the pair in turn.
+        lock_or_not_found!(entry, "diary entry")
+        new_language = language || entry.language_enum
+        new_notes_language = notes_language || entry.notes_language_enum
+        changes_languages = new_language != entry.language_enum || new_notes_language != entry.notes_language_enum
+        if changes_languages && (entry.reviewed_at || entry.threads.exists?)
+          raise Invalid, "An entry's languages can't be changed once it has had feedback or help."
+        end
 
-      validate_languages!(new_language, new_notes_language)
-      entry.update!({ body:, language: language&.serialize, notes_language: notes_language&.serialize }.compact)
+        validate_languages!(new_language, new_notes_language)
+        entry.update!({ body:, language: language&.serialize, notes_language: notes_language&.serialize }.compact)
+      end
       entry
     end
 
@@ -88,14 +123,12 @@ module Diary
       end
 
       @rate_limiter.check!(session)
-      round = entry.review_count + 1
-      review = @tutor.review(
-        Tutor::ReviewRequest.new(
-          text: body, language: entry.language_enum, notes_language: entry.notes_language_enum,
-          round:, threads: self.class.review_context(entry).map { |thread| context_thread(thread) }
-        )
+      request = Tutor::ReviewRequest.new(
+        text: body, language: entry.language_enum, notes_language: entry.notes_language_enum,
+        round: entry.review_count + 1,
+        threads: self.class.review_context(entry).map { |thread| self.class.context_thread(thread) }
       )
-      persist_review(entry, body, round, review)
+      persist_review(entry, body, request, @tutor.review(request))
       entry
     end
 
@@ -104,7 +137,7 @@ module Diary
     # older rounds are left out, and so are superseded sentence threads the learner never replied
     # to: a later round's feedback replaced them, and nobody resolves those, so they would
     # otherwise be sent on every review for good. At most MAX_CONTEXT_THREADS, the most recent,
-    # in creation order.
+    # and then only as many of those, newest first, as fit in MAX_CONTEXT_CHARS; in creation order.
     sig { params(entry: DiaryEntry, logger: Claude::MessageCaller::Logger).returns(T::Array[DiaryThread]) }
     def self.review_context(entry, logger: Rails.logger)
       latest = entry.review_count
@@ -119,7 +152,48 @@ module Diary
         # Counts only: thread text is the learner's and is never logged.
         logger.warn("Diary review context capped: dropped #{total - MAX_CONTEXT_THREADS} of #{total} threads")
       end
-      scope.reorder(id: :desc).limit(MAX_CONTEXT_THREADS).includes(:comments).to_a.reverse
+      threads = scope.reorder(id: :desc).limit(MAX_CONTEXT_THREADS).includes(:comments).to_a
+      chars = 0
+      kept = threads.take_while { |thread| (chars += context_chars(context_thread(thread))) <= MAX_CONTEXT_CHARS }
+      if kept.size < threads.size
+        # Counts only, as above.
+        logger.warn("Diary review context over #{MAX_CONTEXT_CHARS} characters: " \
+          "dropped #{threads.size - kept.size} of #{threads.size} threads")
+      end
+      kept.reverse
+    end
+
+    # A thread as the tutor sees it, its discussion cut to the first comment and the last
+    # MAX_THREAD_COMMENTS (the rest counted in `omitted`). `extra` is a comment not saved yet (a
+    # reply's new message), which is last and so always kept.
+    sig { params(thread: DiaryThread, extra: T.nilable(Tutor::Comment)).returns(Tutor::ContextThread) }
+    def self.context_thread(thread, extra: nil)
+      comments = thread.comments.map { |comment| comment_for(comment) }
+      comments << extra if extra
+      kept, omitted = bounded_comments(comments)
+      Tutor::ContextThread.new(
+        kind: thread.kind_enum, verdict: thread.verdict_enum, sentence: thread.sentence, title: thread.title,
+        round: thread.review_round, resolved: thread.resolved?, current: thread.current, comments: kept, omitted:
+      )
+    end
+
+    # The first comment and the last MAX_THREAD_COMMENTS, and how many were left out between them.
+    sig { params(comments: T::Array[Tutor::Comment]).returns([ T::Array[Tutor::Comment], Integer ]) }
+    def self.bounded_comments(comments)
+      return [ comments, 0 ] if comments.size <= MAX_THREAD_COMMENTS + 1
+
+      [ [ T.must(comments.first), *comments.last(MAX_THREAD_COMMENTS) ], comments.size - 1 - MAX_THREAD_COMMENTS ]
+    end
+
+    # The characters of learner and tutor text a context thread puts in the prompt.
+    sig { params(thread: Tutor::ContextThread).returns(Integer) }
+    def self.context_chars(thread)
+      thread.sentence.to_s.length + thread.title.to_s.length + thread.comments.sum { |comment| comment.body.length }
+    end
+
+    sig { params(comment: DiaryComment).returns(Tutor::Comment) }
+    def self.comment_for(comment)
+      Tutor::Comment.new(author: comment.author_enum, body: comment.body)
     end
 
     # A "Help me say…" thread: the learner's question and the first, broad hint.
@@ -127,13 +201,13 @@ module Diary
     def start_help_thread(entry, question, session:)
       validate_comment!(question, empty_message: "Write what you want to say first.")
       @rate_limiter.check!(session)
-      hint = @tutor.hint(
-        Tutor::HintRequest.new(
-          question:, language: entry.language_enum, notes_language: entry.notes_language_enum, comments: [], level: 1
-        )
+      request = Tutor::HintRequest.new(
+        question:, language: entry.language_enum, notes_language: entry.notes_language_enum, comments: [], level: 1
       )
+      hint = @tutor.hint(request)
       DiaryThread.transaction do
         lock_or_not_found!(entry, "diary entry")
+        languages_unchanged!(entry, request.language, request.notes_language)
         # A question about what they mean is not the first hint, so the next one still is.
         thread = entry.threads.create!(kind: ThreadKind::HELP.serialize, sentence: question,
           hint_level: hint.clarifying ? 0 : 1)
@@ -148,17 +222,17 @@ module Diary
       validate_comment!(body, empty_message: "Write your question first.")
       @rate_limiter.check!(session)
       entry = T.must(thread.diary_entry)
-      context = context_thread(thread, extra: Tutor::Comment.new(author: Author::LEARNER, body:))
-      answer = @tutor.reply(
-        Tutor::ReplyRequest.new(
-          # A HELP question is about what they are writing now; feedback is about what was reviewed.
-          entry_text: thread.kind_enum == ThreadKind::HELP ? entry.body : entry.reviewed_body || entry.body,
-          language: entry.language_enum,
-          notes_language: entry.notes_language_enum, thread: context
-        )
+      context = self.class.context_thread(thread, extra: Tutor::Comment.new(author: Author::LEARNER, body:))
+      request = Tutor::ReplyRequest.new(
+        # A HELP question is about what they are writing now; feedback is about what was reviewed.
+        entry_text: thread.kind_enum == ThreadKind::HELP ? entry.body : entry.reviewed_body || entry.body,
+        language: entry.language_enum,
+        notes_language: entry.notes_language_enum, thread: context
       )
+      answer = @tutor.reply(request)
       DiaryThread.transaction do
         lock_or_not_found!(thread, "diary thread")
+        thread_languages_unchanged!(thread, request.language, request.notes_language)
         thread.comments.create!(author: Author::LEARNER.serialize, body:)
         thread.comments.create!(author: Author::TUTOR.serialize, body: answer)
       end
@@ -173,19 +247,24 @@ module Diary
     def request_hint(thread, session:)
       @rate_limiter.check!(session)
       entry = T.must(thread.diary_entry)
-      level = thread.hint_level + 1
-      hint = @tutor.hint(
-        Tutor::HintRequest.new(
-          question: thread.sentence.to_s, language: entry.language_enum, notes_language: entry.notes_language_enum,
-          comments: thread.comments.map { |comment| comment_for(comment) }, level:
-        )
+      # Old comments may be left out of <thread>, but <level> still says how many hints came before.
+      comments, omitted = self.class.bounded_comments(thread.comments.map { |comment| self.class.comment_for(comment) })
+      request = Tutor::HintRequest.new(
+        question: thread.sentence.to_s, language: entry.language_enum, notes_language: entry.notes_language_enum,
+        comments:, omitted:, level: thread.hint_level + 1
       )
+      hint = @tutor.hint(request)
       DiaryThread.transaction do
         lock_or_not_found!(thread, "diary thread")
+        thread_languages_unchanged!(thread, request.language, request.notes_language)
         thread.comments.create!(author: Author::TUTOR.serialize, body: hint.text)
         # A question about what they mean leaves the level where it was: the hint it replaced
-        # is still to come.
-        thread.update!(hint_level: level) unless hint.clarifying
+        # is still to come. The level counts up from the locked row, not from the level the tutor
+        # was asked for: if another hint on this thread was saved during the call (a second tab, a
+        # retry), this one is the next hint after it. The tutor may have written a level-2 hint
+        # that is saved as the third; keeping the count right (every hint given counted once) is
+        # simpler and more useful than refusing an answer the learner can already read.
+        thread.update!(hint_level: thread.hint_level + 1) unless hint.clarifying
       end
       # Reloaded by lock_or_not_found!, as in #reply.
       thread
@@ -222,11 +301,18 @@ module Diary
 
     private
 
-    sig { params(entry: DiaryEntry, body: String, round: Integer, review: Tutor::Review).void }
-    def persist_review(entry, body, round, review)
+    sig { params(entry: DiaryEntry, body: String, request: Tutor::ReviewRequest, review: Tutor::Review).void }
+    def persist_review(entry, body, request, review)
       now = Time.current
       DiaryEntry.transaction do
         lock_or_not_found!(entry, "diary entry")
+        languages_unchanged!(entry, request.language, request.notes_language)
+        # The round counts up from the locked row, not from the round the tutor was told
+        # (request.round): if another review of this entry was saved during the call (a second
+        # tab, a retry), this one is the round after it, so no two reviews share a round and
+        # review_count counts them all. The tutor's "most recent" labels may then be one round
+        # off, which only affects its wording; the saved rounds stay consistent.
+        round = entry.review_count + 1
         entry.update!(body:, reviewed_body: body, reviewed_at: now, review_count: round)
         # Superseded, not resolved: the learner never said they had dealt with them.
         entry.threads.where(kind: ThreadKind::SENTENCE.serialize, current: true).update_all(current: false, updated_at: now)
@@ -260,19 +346,24 @@ module Diary
       raise NotFound, what
     end
 
-    sig { params(thread: DiaryThread, extra: T.nilable(Tutor::Comment)).returns(Tutor::ContextThread) }
-    def context_thread(thread, extra: nil)
-      comments = thread.comments.map { |comment| comment_for(comment) }
-      comments << extra if extra
-      Tutor::ContextThread.new(
-        kind: thread.kind_enum, verdict: thread.verdict_enum, sentence: thread.sentence, title: thread.title,
-        round: thread.review_round, resolved: thread.resolved?, current: thread.current, comments:
-      )
+    # A tutor answer is written for the language pair it was asked in. Called under the entry's
+    # row lock, which #update_entry also takes, so a pair changed during the call is seen here
+    # and the answer is refused rather than saved on (and locking) an entry now in another pair.
+    sig { params(entry: DiaryEntry, language: Translation::Language, notes_language: Translation::Language).void }
+    def languages_unchanged!(entry, language, notes_language)
+      return if entry.language_enum == language && entry.notes_language_enum == notes_language
+
+      raise Invalid, LANGUAGES_CHANGED
     end
 
-    sig { params(comment: DiaryComment).returns(Tutor::Comment) }
-    def comment_for(comment)
-      Tutor::Comment.new(author: comment.author_enum, body: comment.body)
+    # The same check for a reply or hint, under the thread's row lock (which lock_or_not_found!
+    # has just taken). The entry is re-read, not
+    # locked: locking it after the thread could deadlock with a review, which locks the entry and
+    # then its sentence threads. Re-reading is enough, because the thread already existed when
+    # the call began, and #update_entry refuses a new pair for an entry that has any thread.
+    sig { params(thread: DiaryThread, language: Translation::Language, notes_language: Translation::Language).void }
+    def thread_languages_unchanged!(thread, language, notes_language)
+      languages_unchanged!(T.must(thread.reload_diary_entry), language, notes_language)
     end
 
     sig { params(body: String).void }

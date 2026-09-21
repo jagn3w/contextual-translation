@@ -47,7 +47,8 @@ function reportFailure(failure: RequestFailure, options: Toast = {}) {
       toast.error("This entry doesn't exist any more.", options);
       return;
     case "invalid":
-      toast.error("The languages can't change once an entry has had feedback.", options);
+      // The server words each refusal itself (a pair locked by feedback, or changed mid-answer).
+      toast.error(failure.message ?? "That change isn't allowed.", options);
       return;
     default:
       toast.error(failureMessage(failure), options);

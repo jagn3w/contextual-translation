@@ -256,7 +256,7 @@ fields are non-null, `data` is `null`.
 | --- | --- | --- | --- |
 | `UNAUTHENTICATED` | 401 | `GraphqlController#require_session` | No valid session: none, expired (12 h), or its access code revoked or expired. Body: `{"errors":[{"message":"Not signed in","extensions":{"code":"UNAUTHENTICATED"}}]}` |
 | `NOT_FOUND` | 200 | `BaseDiaryMutation#not_found!` | A diary mutation's id is missing, malformed or another code's, or the record was deleted while the tutor was answering. `requestDiaryHint` on a non-HELP thread is also `NOT_FOUND`. |
-| `INVALID` | 200 | `Mutations::UpdateDiaryEntry` | `updateDiaryEntry` tried to change the languages of an entry that has had feedback or a help thread. |
+| `INVALID` | 200 | `BaseDiaryMutation#invalid!` | `updateDiaryEntry` tried to change the languages of an entry that has had feedback or a help thread; or a tutor mutation (`reviewDiaryEntry`, `startDiaryHelpThread`, `replyToDiaryThread`, `requestDiaryHint`) got its answer for a language pair the entry no longer has ("The languages changed while Claude was answering — try again."; nothing saved). The `message` says which. |
 | `INTERNAL` | 200 | the schema's `rescue_from(StandardError)` | Anything nobody planned for. `message` is "Something unexpected went wrong."; `extensions.reference` is 8 hex characters, logged with the exception as `GraphQL INTERNAL ref=<reference>` so a user's report can be found in the logs. Details never reach the client. |
 
 Validation errors (a query over the complexity or depth limit, an unknown field, a bad enum value
@@ -298,7 +298,7 @@ protection; `/up` exempt), which the app itself never triggers.
 type RequestFailure =
   | { kind: "unauthenticated" }
   | { kind: "notFound" }
-  | { kind: "invalid" }
+  | { kind: "invalid"; message: string | null }
   | { kind: "rateLimited"; retryAfterSeconds: number | null }
   | { kind: "blocked" }
   | { kind: "payloadTooLarge" }
@@ -322,9 +322,10 @@ type RequestFailure =
 - The 401 from `/graphql` is classified as `unauthenticated` whichever way Apollo surfaces it — as a
   `ServerError` by status, or as `CombinedGraphQLErrors` by its code.
 - Only the diary can meet `notFound` and `invalid`. `failureMessage` has generic sentences for
-  them ("That no longer exists.", "That change isn't allowed."); the diary's `reportFailure` in
-  `frontend/app/src/pages/DiaryPage.tsx` words them in its own terms instead: "This entry doesn't
-  exist any more." and "The languages can't change once an entry has had feedback." An autosave
+  them ("That no longer exists.", and for `invalid` the server's message when it carries one,
+  else "That change isn't allowed."); the diary's `reportFailure` in
+  `frontend/app/src/pages/DiaryPage.tsx` says "This entry doesn't exist any more." for `notFound`
+  and shows the server's sentence for `invalid`, since `INVALID` has more than one reason. An autosave
   that lands after its entry was deleted drops its `notFound` silently. `diaryEntry(id:)`, a
   query, returns null for a missing entry instead of raising.
 - `unauthenticated` is never toasted by a page: the `ErrorLink` has already sent the app back to the

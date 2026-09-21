@@ -59,6 +59,19 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # Switches the entry's language while "answering", as a second tab changing it mid-call would.
+  class SwitchingTutor < Diary::FakeTutor
+    def review(request)
+      DiaryEntry.sole.update!(language: "ja")
+      super
+    end
+
+    def hint(request)
+      DiaryEntry.sole.update!(language: "ja")
+      super
+    end
+  end
+
   setup { @access_code, = sign_in }
   teardown { Diary.tutor = nil }
 
@@ -391,6 +404,21 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     assert_equal "NOT_FOUND", body.dig("errors", 0, "extensions", "code")
     assert_equal "No such diary entry.", body.dig("errors", 0, "message")
     assert_not DiaryEntry.exists?(public_id: entry["id"])
+  end
+
+  test "a tutor answer for languages changed during the call is INVALID and saves nothing" do
+    Diary.tutor = SwitchingTutor.new
+    entry = create_entry
+
+    [ [ REVIEW, { id: entry["id"], body: "Hola." } ], [ HELP, { entryId: entry["id"], question: "How do I say hi?" } ] ]
+      .each do |document, input|
+        DiaryEntry.sole.update!(language: "es")
+        body = graphql(document, variables: { input: })
+
+        assert_equal "INVALID", body.dig("errors", 0, "extensions", "code"), document.lines.first
+        assert_equal "The languages changed while Claude was answering — try again.", body.dig("errors", 0, "message")
+      end
+    assert_equal [ "", 0, 0 ], DiaryEntry.sole.then { |record| [ record.body, record.review_count, record.threads.count ] }
   end
 
   test "a tutor failure is a TranslateError and saves nothing" do

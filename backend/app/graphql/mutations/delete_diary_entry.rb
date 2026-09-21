@@ -13,8 +13,10 @@ module Mutations
     sig { params(input: T.untyped).returns(T::Hash[Symbol, T.untyped]) }
     def resolve(input:)
       entry = find_entry!(input.id)
-      entry.destroy!
+      service.delete_entry(entry)
       { deleted_id: entry.public_id }
+    rescue Diary::Service::NotFound => e
+      not_found!(e.message)
     end
   end
 end

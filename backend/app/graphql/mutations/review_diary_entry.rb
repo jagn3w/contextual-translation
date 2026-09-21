@@ -18,6 +18,8 @@ module Mutations
       { entry: nil, errors: [ e ] }
     rescue Diary::Service::NotFound => e
       not_found!(e.message)
+    rescue Diary::Service::Invalid => e
+      invalid!(e.message)
     end
   end
 end

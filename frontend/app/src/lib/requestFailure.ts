@@ -9,8 +9,12 @@ export type RequestFailure =
   | { kind: "unauthenticated" }
   /** `NOT_FOUND`: the id names nothing this session can see (missing, malformed, deleted). */
   | { kind: "notFound" }
-  /** `INVALID`: a change the server refuses on purpose (a diary entry's languages after feedback). */
-  | { kind: "invalid" }
+  /**
+   * `INVALID`: a change the server refuses on purpose. There is more than one reason (a diary
+   * entry's languages after feedback, or languages changed while Claude was answering), so the
+   * server's own sentence travels with it; null when the error carried none.
+   */
+  | { kind: "invalid"; message: string | null }
   | { kind: "rateLimited"; retryAfterSeconds: number | null }
   | { kind: "blocked" }
   | { kind: "payloadTooLarge" }
@@ -59,7 +63,10 @@ export function describeRequestError(error: unknown): RequestFailure {
     const codes = error.errors.map((graphQLError) => graphQLError.extensions?.["code"]);
     if (codes.includes("UNAUTHENTICATED")) return { kind: "unauthenticated" };
     if (codes.includes("NOT_FOUND")) return { kind: "notFound" };
-    if (codes.includes("INVALID")) return { kind: "invalid" };
+    if (codes.includes("INVALID")) {
+      const message = error.errors.find((graphQLError) => graphQLError.extensions?.["code"] === "INVALID")?.message;
+      return { kind: "invalid", message: message === undefined || message === "" ? null : message };
+    }
     // INTERNAL, and validation errors, which carry no code: nothing the user did wrong. The SPA's
     // own operations can't fail validation, so reaching one means client and server disagree.
     const reference = error.errors

@@ -55,10 +55,20 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
 
   Resolved threads from older rounds are left out, and so are superseded (`current: false`)
   sentence threads the learner never commented on: the latest round's feedback replaced them. At
-  most 60 threads are sent, the most recent; the backend logs (as counts only) when it drops any.
+  most 60 threads are sent, the most recent, and of those only as many (newest first) as fit in
+  30,000 characters of thread text; the backend logs (as counts only) when it drops any. Each
+  thread's discussion is cut too (below).
   A superseded sentence thread that is sent is marked `superseded="true"` in the prompt.
   With this context the tutor can say "fixed", notice a repeated mistake, and avoid repeating an
   entry-wide note that is still open.
+- **Long discussions are shortened** in every prompt (review, reply, hint): a thread is sent as its
+  first comment (the tip, note or first hint that says what it is about) and its latest 8
+  (`Diary::Service::MAX_THREAD_COMMENTS`), with an `<omitted count="k"/>` marker for the ones
+  between. The learner still sees every comment; only what Claude is sent is cut. A hint's level
+  comes from `hintLevel`, so the ladder stays right when old hints are left out.
+- Two overlapping reviews of one entry (two tabs, a retry after a dropped connection) get
+  consecutive rounds: the round saved is counted from the entry's row under its lock when the
+  answer is saved, not from the round the tutor was told when the request was built.
 - Sentence threads from earlier reviews become `current: false` (kept, shown under "Earlier
   feedback"); they are not resolved, because the learner did not resolve them.
 - Highlight spans are offsets into `reviewedBody` (the body as it was reviewed), in Unicode code
@@ -82,7 +92,9 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   one, each more revealing: 1 that broad teacher's hint, 2 key vocabulary, 3 a partial sentence with
   gaps, 4+ the full sentence with an explanation. `hintLevel` counts general hints given. A
   question about what the learner means (see above) is not a hint: a thread that opens with one
-  has `hintLevel` 0, and **Another hint** after one asks for the same level again. The
+  has `hintLevel` 0, and **Another hint** after one asks for the same level again. The new level
+  is counted from the thread's row under its lock when the hint is saved, so two overlapping
+  requests count two hints, not the same level twice. The
   learner can also reply with a specific question, which the tutor answers directly.
 
 ## Backend
@@ -113,7 +125,10 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   nothing. Output budgets: `ClaudeTutor::REVIEW_MAX_TOKENS` 32,000 (worst case ≈ 9,800 at the
   review limit), `REPLY_MAX_TOKENS` 8,000 for replies (worst ≈ 4,500: the thread's sentence
   corrected on request; the prompt never lets a reply rewrite the whole entry), `SHORT_MAX_TOKENS`
-  4,000 for hints and topics (worst ≈ 2,300); the arithmetic is beside the constants.
+  4,000 for hints and topics (worst ≈ 2,300); the arithmetic is beside the constants. Input:
+  each thread's comments are cut to the first and the latest `MAX_THREAD_COMMENTS` (8), and a
+  review's context to `MAX_CONTEXT_THREADS` (60) threads and `MAX_CONTEXT_CHARS` (30,000)
+  characters; all unmeasured estimates ([prompts.md](prompts.md#input-budgets)).
 
 ## GraphQL contract
 
@@ -178,7 +193,11 @@ type DeleteDiaryEntryPayload { deletedId: ID }
 
 An entry's language pair can change only until its first feedback or help thread (once it has
 been reviewed or has any thread, `updateDiaryEntry` with a different language raises a top-level
-error, code `INVALID`); a pair of one language twice is a
+error, code `INVALID`; the check runs under the entry's row lock, the one a review or a new help
+thread takes to save its answer). A tutor answer that arrives for a pair the entry no longer has
+is refused rather than saved: `reviewDiaryEntry`, `startDiaryHelpThread`, `replyToDiaryThread`
+and `requestDiaryHint` raise a top-level `INVALID` error, "The languages changed while Claude was
+answering — try again.", and save nothing. A pair of one language twice is a
 `SAME_LANGUAGE` error in the payload. An entry can be deleted from its header, after a
 confirmation. Bare `/diary` shows a prompt to choose or start an entry.
 

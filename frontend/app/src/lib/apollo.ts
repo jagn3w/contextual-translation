@@ -6,6 +6,7 @@ type Options = {
   /**
    * Called when an operation fails because the session is missing, expired or revoked. The
    * Viewer query is excluded: its 401 is how the app learns it's signed out in the first place.
+   * App answers it by wiping this client's cache and the unsaved drafts, then showing the gate.
    */
   onUnauthenticated: () => void;
 };

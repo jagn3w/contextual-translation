@@ -77,18 +77,35 @@ App                  owns the Apollo client, the Toaster and the session epoch
 - **The epoch.** `App` keeps a counter and uses it as `SessionBoundary`'s `key`. Bumping it
   remounts the whole signed-in tree, which re-runs `Viewer` and throws away every page's local
   state. It is bumped on sign-in, on sign-out, and when any operation reports the session is gone.
+- **Wiping the old session.** Every one of those restarts first wipes what the client holds for the
+  session: `wipeSessionState` (`frontend/app/src/lib/sessionState.ts`) forgets the unsaved diary
+  drafts (`lib/unsavedDrafts.ts`) and clears the Apollo store (every entry, body, thread and
+  translation). It is the only way to wipe, so no path does half of it. `App` sets a `wiping`
+  state that unmounts `SessionBoundary` (a brief "Loading…"), runs the wipe in an effect, and only
+  then bumps the epoch: `clearStore` cancels queries still in flight, and with nothing mounted the
+  cancellation reaches no screen or toast. It happens three times:
+  1. on a deliberate **sign-out**, once `DELETE /api/session` has succeeded;
+  2. when the **session ends** any other way — expired, revoked, or signed out in another tab —
+     as soon as an operation comes back unauthenticated, before the gate shows. Diary text typed
+     since the last autosave is discarded with it: there is no session left to save it to;
+  3. on **sign-in**, again, as a backstop, so nothing of an earlier session (say, a late response
+     that landed after the second wipe) reaches the new one.
+
+  Without it, a different access code signing in on the same tab would see the previous code's
+  diary from the cache and have its draft restored. Nothing is persisted — no `localStorage`,
+  `sessionStorage` or IndexedDB — so the tab's memory is all there is to wipe.
 - **Signing in** is a plain `fetch` to `POST /api/session` (`frontend/app/src/lib/session.ts`). A 401 there means
   a wrong code (`invalidCode`), not an ended session.
 - **Signing out** (`handleSignOut`) first awaits `flushAutosaves()` so diary drafts reach the
   server while the session still exists, then `DELETE /api/session`. Only a 204 counts: the cookie
-  is `HttpOnly`, so only the server can clear it, and on any failure the app stays signed in and
-  toasts why. On success it forgets unsaved drafts, clears the Apollo store and restarts.
+  is `HttpOnly`, so only the server can clear it, and on any failure the app stays signed in, keeps
+  everything, and toasts why. On success it restarts, wiping as above.
 - **Session ended versus signed out.** When an operation other than `Viewer` fails
-  unauthenticated, the client's `onUnauthenticated` callback sets `sessionEnded` and bumps the
-  epoch, and the gate says "Your session ended. Enter the access code again." A deliberate
-  sign-out sets a `signedOut` ref that suppresses this until the next sign-in: a request that was
-  still in flight when the session was deleted comes back refused, and that is no news to someone
-  who just signed out.
+  unauthenticated, the client's `onUnauthenticated` callback restarts with `sessionEnded` set, and
+  the gate says "Your session ended. Enter the access code again." A `sessionGone` ref, set by a
+  sign-out or an ended session until the next sign-in, makes later unauthenticated answers no-ops:
+  a request that was still in flight when the session went comes back refused, and that is no news
+  — it must neither call a deliberate sign-out an ended session nor wipe and restart again.
 
 ## Routing
 
@@ -165,8 +182,9 @@ A request fails in one of two ways, and each has one place that words it.
    counters (`frontend/app/src/lib/translateLimits.ts`), as the diary's do from `lib/diary.ts`.
 
 The diary's `reportFailure` words the two classified kinds only it can meet in diary terms —
-`notFound` as "This entry doesn't exist any more.", `invalid` as "The languages can't change once
-an entry has had feedback." — and passes every other kind to `failureMessage`. An autosave that
+`notFound` as "This entry doesn't exist any more.", and `invalid` as the server's own sentence,
+which `invalid` carries because there is more than one reason (the pair is locked by feedback or a
+help thread, or it changed while Claude was answering) — and passes every other kind to `failureMessage`. An autosave that
 lands after its entry was deleted drops its `notFound` without a toast.
 
 Every one of these is an exhaustive `switch` ending in `assertNever` (`frontend/app/src/lib/assertNever.ts`):
@@ -203,7 +221,8 @@ component that asked keeps the learner's text in place to try again.
   sign-out.
 - **`unsavedDrafts.ts`** is a module-level map of drafts the server may not have yet, by entry id.
   A learner who leaves an entry and comes back before the unmount save lands gets the draft, not
-  the older cached body. Cleared on sign-out (`forgetDrafts`) and between tests.
+  the older cached body. Cleared whenever a session ends or begins (`wipeSessionState`, above)
+  and between tests.
 - **`useAutoGrowTextarea(value)`** keeps a textarea exactly as tall as its text (panes grow instead
   of scrolling), up to the element's own CSS `max-height`, past which it scrolls. The ceiling is
   read from the computed style so it stays in the markup (`max-h-[65vh]`, `max-h-[70vh]`); a

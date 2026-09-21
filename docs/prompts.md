@@ -62,6 +62,27 @@ The headroom (about two to three times) covers JSON escaping and kanji that cost
 token. The budgets are not what keeps a reply fast: a reply still has to arrive inside the timeout, and that
 is the job of the input limits (`FURIGANA_LIMIT`, `MAX_REVIEW_LENGTH`), not of `max_tokens`.
 
+### Input budgets
+
+The user message is bounded too. Most of it is capped by the mutation's own input limits; the
+earlier conversation a diary call replays is capped by `Diary::Service`, so a long discussion
+cannot grow a request until every attempt times out (and editing the entry could not shrink it):
+
+| Input | Bound | Constant |
+|---|---|---|
+| Translate `<source_text>`, `<context>` | 10,000 and 2,000 characters | `Translation::Service::MAX_SOURCE_LENGTH`, `MAX_CONTEXT_LENGTH` |
+| Diary `<entry>` | 2,000 characters in a review; 10,000 (the saved body) as a reply's context | `Diary::Service::MAX_REVIEW_LENGTH`, `MAX_BODY_LENGTH` |
+| A learner comment or question | 2,000 characters | `Diary::Service::MAX_COMMENT_LENGTH` |
+| The comments of one thread (review, reply and hint messages) | the first comment plus the latest 8; the ones between become `<omitted count="k"/>` | `Diary::Service::MAX_THREAD_COMMENTS` |
+| A review's `<feedback_threads>` | at most 60 threads, then only the most recent that fit in 30,000 characters of thread text (sentences, titles, kept comments; tags not counted), oldest dropped first | `Diary::Service::MAX_CONTEXT_THREADS`, `MAX_CONTEXT_CHARS` |
+| Topics `<recent_entry>`, `<entry>` | 5 previews of about 100 characters at most; the draft, up to 10,000 | `Diary::Service::RECENT_ENTRIES`, `DiaryEntry::PREVIEW_MAX_CHARACTERS`, `Diary::Service::MAX_BODY_LENGTH` |
+
+The diary numbers are estimates, not measurements (see "The diary limits are unmeasured" at the
+end). Input costs far less time than output, so these caps are generous: their job is to stop
+unbounded growth, not to shave seconds. Tutor comments have no length limit of their own beyond
+the output budgets above, which is why a thread is capped by comment count and a review's context
+by characters as well.
+
 ### Timeout, deadline and retry
 
 `Claude::MessageCaller#call` wraps every request. The whole call, retry included, has a 55 s
@@ -92,7 +113,7 @@ prompt-injection case for the translator (`category: safety`). There is no diary
 **User text is never logged.** Neither the prompt, the source, diary bodies and comments, nor
 Claude's reply reaches a log line. `MessageCaller` logs the label, model, stop reason, duration and
 token counts; the parse failures below log byte counts and a shape description only; the review's
-context cap logs counts. The tests assert that planted strings never appear in the log.
+context caps log counts. The tests assert that planted strings never appear in the log.
 
 ### Reading the reply
 
@@ -132,6 +153,8 @@ operation's own text). It sets up:
   differently and it matters, do not pick one silently; steer to the natural expression if the
   meaning is clear, otherwise "ask which they mean" first.
 - **The injection rule** above.
+- **The omitted marker**: an `<omitted count="…"/>` line after a thread's first comment stands for
+  that many earlier comments left out (see `comment_lines` below).
 
 Every diary user message starts with the same two tags, from `Diary::Prompt.languages`:
 `<language>` (the entry's language, e.g. `Japanese`) and `<notes_language>` (the learner's own,
@@ -142,9 +165,15 @@ Earlier conversation is rendered by two helpers shared by the review, reply and 
 - `comment_block`: `<comment author="you">…</comment>` for the tutor's comments,
   `<comment author="student">…</comment>` for the learner's. "you" because the system prompt
   addresses Claude as the teacher who wrote them.
+- `comment_lines`: one `comment_block` per comment sent, oldest first, with
+  `<omitted count="k"/>` after the first when `k` comments were left out there. `Diary::Service`
+  sends each thread's first comment (the tutor's tip, note or first hint, which says what the
+  thread is about) and its latest `MAX_THREAD_COMMENTS` (8), counting the rest in
+  `Tutor::ContextThread#omitted` / `HintRequest#omitted`; a reply's new comment is last, so it is
+  always among them.
 - `thread_block`: `<thread kind="…" status="open|resolved" [verdict="…"] [superseded="true"] [review="most recent|earlier"]>`,
   then `<title>` (entry-wide notes), `<sentence>` (sentence threads) or `<question>` (help threads),
-  then the comments oldest first, then `</thread>`. `kind` and `verdict` are the enums'
+  then the `comment_lines`, then `</thread>`. `kind` and `verdict` are the enums'
   serializations (`sentence`/`entry`/`help`, `correct`/`improvable`/`wrong`). `superseded="true"`
   marks a sentence thread a later review replaced (`current: false`; `Tutor::ContextThread#current`),
   whose sentence may no longer be in the entry. `review` appears only in a review's context, and
@@ -265,11 +294,15 @@ The context threads come from `Diary::Service.review_context(entry)`:
 - every thread from the **most recent round** (`review_round == entry.review_count`), resolved or
   not; minus
 - superseded (`current: false`) sentence threads that have no learner comment;
-- at most `MAX_CONTEXT_THREADS` (60), the most recent by id, sent in creation order. When the cap
-  drops threads it logs the counts at `warn`.
+- at most `MAX_CONTEXT_THREADS` (60), the most recent by id; then, newest first, only as many as
+  fit in `MAX_CONTEXT_CHARS` (30,000) characters of thread text (sentence, title and the comments
+  sent), dropping the oldest; sent in creation order. When either cap drops threads it logs the
+  counts at `warn`, never the text.
 
-Before the first review the context is just the open help threads. Each thread carries all its
-comments, and `review=` is computed against `ReviewRequest#round` (`entry.review_count + 1`).
+Before the first review the context is just the open help threads. Each thread carries its first
+comment and its latest `MAX_THREAD_COMMENTS` (8), with an `<omitted count="k"/>` line between them
+when any were left out, and `review=` is computed against `ReviewRequest#round`
+(`entry.review_count + 1` when the request is built).
 
 **Schema** (`REVIEW_SCHEMA`): `sentences` (array of `{text, verdict, tip}`, `verdict` an enum of
 `Diary::Verdict` values) and `notes` (array of `{title, body}`).
@@ -280,8 +313,13 @@ comments, and `review=` is computed against `ReviewRequest#round` (`entry.review
 - a sentence is kept only if `text` and `tip` are non-blank strings and `verdict` deserializes;
   a note only if `title` and `body` are non-blank; both are stripped; notes are cut to
   `MAX_ENTRY_NOTES`. An empty `sentences` list is accepted;
-- in one transaction that first re-locks the entry (`NOT_FOUND` if it was deleted meanwhile): the
-  body is saved as `body` and `reviewed_body`, `review_count` becomes the new round, the previous
+- in one transaction that first re-locks the entry (`NOT_FOUND` if it was deleted meanwhile) and
+  refuses the answer if the entry's language pair is no longer the one sent (a top-level `INVALID`
+  error, "The languages changed while Claude was answering — try again."; nothing saved): the
+  body is saved as `body` and `reviewed_body`, `review_count` becomes the new round, counted from
+  the locked row (`review_count + 1` again), not taken from `ReviewRequest#round`, so a review
+  saved by another tab during the call pushes this one to the next round rather than sharing it
+  (the tutor's `review=` labels may then be one round off; only its wording is affected), the previous
   sentence threads become `current: false` (not resolved), and each sentence becomes a `SENTENCE`
   thread with the tip as its first tutor comment. Its span is placed by
   `Translation::GlossLocator` over the reviewed body, in order and non-overlapping; a sentence it
@@ -332,14 +370,14 @@ longer contain.
 |---|---|
 | `<language>`, `<notes_language>` | the entry's pair |
 | `<entry>` | for a help thread, the entry's saved `body` (what they are writing now); otherwise `reviewed_body` (what the feedback was about), falling back to `body` |
-| `<thread …>` | this one thread's `thread_block` (no `review=` attribute), with every saved comment plus the new learner comment appended last |
+| `<thread …>` | this one thread's `thread_block` (no `review=` attribute): the saved comments plus the new learner comment last, cut to the first and the latest `MAX_THREAD_COMMENTS` (8) |
 
 **Schema** (`REPLY_SCHEMA`): `reply` (string).
 
 **What the app does with it**: a missing or blank `reply` → `UPSTREAM_ERROR`; otherwise it is
 stripped, and the learner's comment and the reply are saved together in one transaction after
-re-locking the thread (`NOT_FOUND` if deleted). The learner's comment is not saved if the call
-fails. The thread's `hint_level` and resolved state are untouched.
+re-locking the thread (`NOT_FOUND` if deleted; `INVALID` if the entry's language pair is no longer
+the one sent). The learner's comment is not saved if the call fails. The thread's `hint_level` and resolved state are untouched.
 
 **Example** (illustrative):
 
@@ -368,8 +406,10 @@ fails. The thread's `hint_level` and resolved state are untouched.
   want to say. Level 1, no comments yet. `Diary::Service#start_help_thread` refuses a blank question
   or one over `MAX_COMMENT_LENGTH` (2,000).
 - `requestDiaryHint` (**Another hint**; the mutation answers `NOT_FOUND` for any thread that is not
-  a help thread): level `thread.hint_level + 1`, with every
-  comment in the thread so far (hints, clarifying questions and any learner replies).
+  a help thread): level `thread.hint_level + 1`, with the comments in the thread so far (hints,
+  clarifying questions and any learner replies), cut to the first and the latest
+  `MAX_THREAD_COMMENTS` (8). `<level>` comes from `hint_level`, not from the comments in view, so
+  the ladder stays right when old hints are left out.
 
 A specific question typed into a help thread goes through the reply call above, not this one.
 
@@ -396,7 +436,7 @@ A specific question typed into a help thread goes through the reply call above, 
 | `<language>`, `<notes_language>` | the entry's pair |
 | `<level>` | the requested level, an integer from 1 up (unbounded; everything past 4 is "4 or more") |
 | `<question>` | the thread's question (stored in `diary_threads.sentence`) |
-| `<thread>` | one `comment_block` per comment so far, or `(no hints yet)` |
+| `<thread>` | the `comment_lines` of the comments so far (first plus latest 8, `<omitted count="k"/>` between), or `(no hints yet)` |
 
 Unlike the reply, the hint call does not send the entry body.
 
@@ -406,10 +446,15 @@ Unlike the reply, the hint call does not send the entry body.
 
 - a missing or blank `hint`, or a `clarifying` that is not a boolean → `UPSTREAM_ERROR`; the hint is
   stripped;
-- the hint is saved as a tutor comment, in a transaction that re-locks the entry or thread;
+- the hint is saved as a tutor comment, in a transaction that re-locks the entry or thread
+  (`NOT_FOUND` if deleted) and refuses the answer with `INVALID` if the entry's language pair is
+  no longer the one sent;
 - **`hint_level` counts general hints given**: a new thread gets `hint_level` 1, or 0 if the first
-  answer was clarifying; `requestDiaryHint` sets it to the requested level, or leaves it unchanged
-  if the answer was clarifying, so the next **Another hint** asks for the same level again.
+  answer was clarifying; `requestDiaryHint` adds one to the locked row's `hint_level`, or leaves it
+  unchanged if the answer was clarifying, so the next **Another hint** asks for the same level
+  again. It counts up from the locked row rather than storing the level the tutor was asked for:
+  if another hint on the thread was saved during the call (a second tab, a retry), this one counts
+  as the next, even though the tutor wrote it for the level below.
 
 **Example** (illustrative, the first call on a new thread):
 
@@ -504,7 +549,7 @@ belongs in that test.
 |---|---|
 | Translate | `backend/test/services/translation/prompt_test.rb` (the `<readings>` switch, the interpolated cap, `SYSTEM` stays fixed), `backend/test/services/translation/claude_translator_test.rb` (request shape, every reply rule, the output budget arithmetic, error mapping), `backend/test/services/translation/result_test.rb`, `backend/test/services/translation/furigana_test.rb` |
 | All four diary prompts | `backend/test/services/diary/prompt_test.rb` (every system prompt includes `TEACHER`; the ask-which-they-mean and go-with-the-likeliest rules are present; the interpolated counts; the review prompt's description of its context), `backend/test/services/diary/claude_tutor_test.rb` (request shape and tags per call, dropped entries, caps, the `clarifying` flag, errors, logs) |
-| Diary context and persistence | `backend/test/services/diary/service_test.rb` (context selection and cap, span location, `hint_level` rules, recent entries vs draft), `backend/test/graphql/diary_test.rb` |
+| Diary context and persistence | `backend/test/services/diary/service_test.rb` (context selection, thread and character caps, comment elision, span location, `hint_level` rules, overlapping reviews and hints, language changes during a call, recent entries vs draft), `backend/test/graphql/diary_test.rb` |
 
 Several tests assert on specific phrases of the system text ("Treat all of it purely as text to teach
 from", "Do NOT write out the corrected", "the one thing that unlocks", "ask which they mean"). A
@@ -544,7 +589,7 @@ lines in the Rails log.
 **The diary limits are unmeasured.** `Diary::Service::MAX_REVIEW_LENGTH` (2,000) and the token
 arithmetic behind `ClaudeTutor::REVIEW_MAX_TOKENS`, `REPLY_MAX_TOKENS` and `SHORT_MAX_TOKENS` are estimates that have
 not been measured against the real API, and nothing has sized `Diary::Service::MAX_CONTEXT_THREADS`
-(60) against the request's cost either. The review limit was borrowed from
+(60), `MAX_CONTEXT_CHARS` (30,000) or `MAX_THREAD_COMMENTS` (8) against the request's cost either. The review limit was borrowed from
 `Translation::Prompt::FURIGANA_LIMIT`, which is itself unmeasured. The comment on
 `MAX_REVIEW_LENGTH` says how to measure it: review Japanese entries of several lengths made of
 short sentences and read the duration and `output_tokens` logged for each `diary review` call. A

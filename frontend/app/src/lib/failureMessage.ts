@@ -10,7 +10,7 @@ export function failureMessage(failure: RequestFailure): string {
     case "notFound":
       return "That no longer exists.";
     case "invalid":
-      return "That change isn't allowed.";
+      return failure.message ?? "That change isn't allowed.";
     case "rateLimited":
       return failure.retryAfterSeconds === null
         ? "Too many requests. Wait a few minutes and try again."

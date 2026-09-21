@@ -20,7 +20,9 @@ module Mutations
     rescue Translation::Error => e
       { entry: nil, errors: [ e ] }
     rescue Diary::Service::Invalid => e
-      raise GraphQL::ExecutionError.new(e.message, extensions: { "code" => "INVALID" })
+      invalid!(e.message)
+    rescue Diary::Service::NotFound => e
+      not_found!(e.message)
     end
   end
 end

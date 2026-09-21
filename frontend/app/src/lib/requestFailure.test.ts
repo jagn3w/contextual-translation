@@ -55,7 +55,7 @@ describe("describeRequestError", () => {
     });
 
     expect(describeRequestError(notFound)).toEqual({ kind: "notFound" });
-    expect(describeRequestError(invalid)).toEqual({ kind: "invalid" });
+    expect(describeRequestError(invalid)).toEqual({ kind: "invalid", message: "Languages can't change" });
   });
 
   it("treats a validation error, which has no code, as internal without a reference", () => {

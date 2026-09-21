@@ -20,7 +20,9 @@ module Diary
     # A thread as the tutor sees it: enough to know what it said and whether the learner has
     # dealt with it. `round` is the review that opened a SENTENCE or ENTRY thread (nil for HELP).
     # `current` is false for a SENTENCE thread a later review replaced (about an older version of
-    # the entry); it is only sent when the learner replied in it.
+    # the entry); it is only sent when the learner replied in it. A long discussion is cut
+    # (Service::MAX_THREAD_COMMENTS): `comments` is then the first comment and the latest few, and
+    # `omitted` counts the ones left out between them.
     class ContextThread < T::Struct
       const :kind, ThreadKind
       const :verdict, T.nilable(Verdict)
@@ -30,6 +32,7 @@ module Diary
       const :resolved, T::Boolean
       const :current, T::Boolean, default: true
       const :comments, T::Array[Comment]
+      const :omitted, Integer, default: 0
     end
 
     class ReviewRequest < T::Struct
@@ -67,12 +70,14 @@ module Diary
     end
 
     # The next general hint for a "Help me say…" question. `comments` are the thread so far (none
-    # yet for the first hint).
+    # yet for the first hint), cut like a ContextThread's: `omitted` counts the comments left out
+    # after the first. `level` comes from the thread's hint count, so it stays right whatever was cut.
     class HintRequest < T::Struct
       const :question, String
       const :language, Translation::Language
       const :notes_language, Translation::Language
       const :comments, T::Array[Comment]
+      const :omitted, Integer, default: 0
       const :level, Integer
     end
 

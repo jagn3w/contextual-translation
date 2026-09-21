@@ -43,4 +43,16 @@ class Diary::PromptTest < ActiveSupport::TestCase
     assert_match(/only the most recent are included/, Diary::Prompt::REVIEW_SYSTEM)
     assert_match(/superseded="true"/, Diary::Prompt::REVIEW_SYSTEM)
   end
+
+  test "left-out comments are marked after the first, and the prompts say what the marker means" do
+    comment = ->(body) { Diary::Tutor::Comment.new(author: Diary::Author::TUTOR, body:) }
+    thread = Diary::Tutor::ContextThread.new(kind: Diary::ThreadKind::HELP, verdict: nil, sentence: "q", title: nil,
+      round: nil, resolved: false, comments: [ comment.("first"), comment.("last") ], omitted: 4)
+
+    assert_equal [ "first", %(<omitted count="4"/>), "last" ],
+      Diary::Prompt.comment_lines(thread.comments, thread.omitted).map { |line| line.sub(/<comment author="you">(.*)<\/comment>/, '\\1') }
+    assert_includes Diary::Prompt.thread_block(thread, nil), %(first</comment>\n<omitted count="4"/>\n)
+    assert_not_includes Diary::Prompt.thread_block(thread.with(omitted: 0), nil), "<omitted"
+    assert_match(/<omitted count="…"\/> line/, Diary::Prompt::TEACHER)
+  end
 end

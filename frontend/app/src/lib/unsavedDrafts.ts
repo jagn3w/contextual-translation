@@ -19,7 +19,7 @@ export function draftSaved(entryId: string, text: string): void {
   if (drafts.get(entryId) === text) drafts.delete(entryId);
 }
 
-/** On sign-out (after the last saves have been attempted), and between tests. */
+/** Via wipeSessionState whenever a session ends or begins, and between tests. */
 export function forgetDrafts(): void {
   drafts.clear();
 }
