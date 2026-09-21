@@ -211,6 +211,8 @@ Reading the reply:
 
 ### Prompt
 
+The request and reply side by side with the diary's prompts: [prompts.md](prompts.md).
+
 `backend/app/services/translation/prompt.rb`. `SYSTEM` is fixed text. Everything specific to the
 request is in the user message, in tags: `<source_language>`, `<target_language>`,
 `<notes_language>` (always the source language), `<gloss_level>` (`none`/`notable`/`every`, the

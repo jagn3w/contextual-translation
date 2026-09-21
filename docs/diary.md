@@ -100,6 +100,7 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   `ClaudeTutor` (structured outputs, one prompt per operation). Both share the one Anthropic client and
   the call/retry/deadline/credential machinery with `ClaudeTranslator`, so there is one WIF token
   refresher per process.
+  Each prompt, its tags, schema and reply handling: [prompts.md](prompts.md).
 - Diary text is the learner's words: it goes inside tags, is treated as text never as instructions,
   and is never logged.
 - Every tutor call counts against `Translation::RateLimiter` (the same per-session and per-code
