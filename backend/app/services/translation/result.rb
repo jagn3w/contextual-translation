@@ -56,7 +56,7 @@ module Translation
       # kept only if what came back really annotates this translation (Furigana.checked) — a
       # translator that annotates anyway can neither spend the reply on it nor paint a reading
       # over the wrong characters.
-      readings = japanese && Prompt.furigana?(request) ? Furigana.checked(furigana, text) : nil
+      readings = Prompt.furigana?(request) ? Furigana.checked(furigana, text) : nil
       # The reader who asked for none gets none, whatever the translator offered. That is the
       # reader's own choice rather than the cap cutting a list short, so it is no truncation.
       offered = request.gloss_level == GlossLevel::NONE ? [] : glosses

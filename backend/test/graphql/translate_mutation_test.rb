@@ -111,7 +111,12 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
     # `glossLevel: null` is legal under the committed schema — nullable, with a default — so it
     # has to mean the default, not a top-level INTERNAL error.
     assert_nil body["errors"]
-    assert_equal [ Translation::GlossLevel::NOTABLE ], levels
+    # Read from the argument rather than written out again: the mutation coerces the null to the
+    # default the schema publishes, so this asserts the two agree rather than asserting the value
+    # twice. Change `default_value:` and a null request follows it; a re-spelled literal here (or
+    # in the mutation) is exactly how it would not.
+    assert_equal Translation::GlossLevel::NOTABLE, Types::TranslateInputType.gloss_level_default
+    assert_equal [ Types::TranslateInputType.gloss_level_default ], levels
     assert_equal "[ES] Is this a bat?", body.dig("data", "translate", "translation", "text")
     assert_empty body.dig("data", "translate", "errors")
   end

@@ -40,6 +40,19 @@ class Translation::PromptTest < ActiveSupport::TestCase
       "one switch for both annotations is what the <readings> switch replaced"
   end
 
+  test "a target that can have no readings is told so, however short the source" do
+    request = Translation::Request.new(
+      source_text: "Is this a bat?", source_language: Translation::Language::EN,
+      target_language: Translation::Language::ES, context: nil
+    )
+
+    # Spanish has no kana to read, so asking for them invites output tokens and latency for a
+    # string the reply can never carry. The switch and Result.for_request's gate read one
+    # predicate, so neither can be told "on" while the other drops what comes back.
+    assert_not Translation::Prompt.furigana?(request)
+    assert_includes Translation::Prompt.user_message(request), "<readings>off</readings>"
+  end
+
   test "the system prompt stays fixed text" do
     assert_not_includes Translation::Prompt::SYSTEM, "source_text>\n", "the source never reaches the system prompt"
   end

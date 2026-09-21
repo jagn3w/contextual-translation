@@ -23,7 +23,7 @@ module Mutations
         # Coerce rather than tighten the argument to non-null: that would turn those queries into
         # validation errors instead of the omitted-argument behaviour they plainly mean, and the
         # schema is the client's codegen contract (design D1.2).
-        gloss_level: input.gloss_level || Translation::GlossLevel::NOTABLE
+        gloss_level: input.gloss_level || Types::TranslateInputType.gloss_level_default
       )
       result = Translation::Service.new.call(request, session: context.fetch(:current_session))
       {

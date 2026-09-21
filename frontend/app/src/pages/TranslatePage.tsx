@@ -38,7 +38,8 @@ type Translation = NonNullable<TranslateMutation["translate"]["translation"]> & 
  * switch back — the Japanese is still sitting in its buffer, unchanged and still the answer to the
  * same source, context and level, but its furigana and its note had been overwritten by the
  * Spanish answer and the pane marked it out of date besides, pushing the reader into a
- * re-translate against a 20/min, 300/day cap for text that had not changed.
+ * re-translate against the per-session translation limits (RateLimiter::SESSION_LIMITS,
+ * design D3.4) for text that had not changed.
  *
  * Both languages of a pair record the answer, because both are needed later: the one that received
  * the translation, so the ruby and the note can be put back over it, and the one it was translated
@@ -539,7 +540,7 @@ export function TranslatePage({ onSignOut }: Props) {
                   // button is disabled with the only explanation ("Too long to translate — …")
                   // down there with it. The hook reads this number off the element rather than
                   // holding its own copy, so the ceiling lives here with the rest of the layout.
-                  className="block max-h-[65vh] min-h-72 w-full resize-none overflow-hidden bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60 focus:outline-none"
+                  className="focus-ring block max-h-[65vh] min-h-72 w-full resize-none overflow-hidden bg-canvas px-5 py-4 text-lg leading-relaxed placeholder:text-muted/60"
                 />
                 {/* The request's two quiet settings live where the text is typed: the picker on the
                     left, the count keeping its right edge. */}

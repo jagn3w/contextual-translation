@@ -390,7 +390,8 @@ describe("TranslatePage", () => {
     // wrote it — and the readings over it, the definition under it and the note beside it — was
     // evicted by the answer made *out of* it, which changed none of those characters. The pane then
     // painted itself up to date over strictly less than it had, so nothing on screen gave the
-    // reader a reason to re-translate against a 20/min, 300/day cap for text that had not moved.
+    // reader a reason to re-translate against the per-session translation limits for text that
+    // had not moved.
     expect(within(result).getByText("日本語", { selector: "ruby" })).toBeInTheDocument();
     expect(readings(result)).toEqual(["にほんご"]);
     expect(within(result).getByRole("button", { name: "日本語" })).toBeInTheDocument();
@@ -434,6 +435,19 @@ describe("TranslatePage", () => {
     expect(source.className).toMatch(/\bmax-h-\[/);
     expect(source).toHaveClass("overflow-hidden");
     expect(screen.getByText(/Too long to translate/)).toBeInTheDocument();
+  });
+
+  it("gives the source textarea a focus indicator rather than suppressing its outline", async () => {
+    await renderSignedIn();
+
+    // It used to carry `focus:outline-none` and nothing else, making it the one control on the
+    // page a keyboard user could focus with no visible sign of it — worse than the faint rings
+    // elsewhere, which are at least there. `focus-ring` is the shared utility whose contrast
+    // index.css.test.ts holds to 3:1.
+    const source = screen.getByLabelText("Text to translate");
+
+    expect(source).toHaveClass("focus-ring");
+    expect(source.className).not.toMatch(/\bfocus:outline-none\b/);
   });
 
   it("disables the button until there is text", async () => {
@@ -789,8 +803,8 @@ describe("TranslatePage", () => {
 
     // A second direction out of the same, unedited English. The furigana, the note and the
     // shortfall flags used to live in one page-wide slot that this answer overwrote — so the
-    // Japanese came back bare and marked out of date, for a re-translate against a 20/min,
-    // 300/day cap that would have returned the identical text.
+    // Japanese came back bare and marked out of date, for a re-translate against the per-session
+    // translation limits that would have returned the identical text.
     await pickLanguage(user, "Target language", /Spanish/);
     await user.click(screen.getByRole("button", { name: "Update Translation" }));
     expect(await within(result).findByText("japonés")).toBeInTheDocument();

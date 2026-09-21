@@ -39,10 +39,18 @@
   --color-focus: var(--color-accent);
 }
 
-/* The focus indicator itself, written once. Every focusable control uses `focus-ring` rather than
-   spelling out its own `focus:outline-none focus-visible:ring-…`: that string had drifted to three
-   opacities across four controls, and an indicator that is copied is an indicator that gets copied
-   wrong. Ratios are recorded beside --color-focus above.
+/* The focus indicator itself, written once, for controls whose only focus affordance it is: both
+   language pickers, the definitions picker, the swap button and the source textarea. Spelling the
+   indicator out per control is what let it drift to three opacities across four of them, and an
+   indicator that is copied is an indicator that gets copied wrong. Ratios are recorded beside
+   --color-focus above.
+   Three controls do NOT use it yet, so this is not the universal it once claimed to be: the
+   glossed word (`ring-accent/40`, 1.66:1) is an inline element in flowing ruby text, where an
+   offset outline needs looking at in a browser before it is imposed; the context textarea and the
+   access-code field (`ring-accent/25`, 1.36:1) also shift `border-color` on focus, so they are
+   faint rather than absent. All three are recorded as deferred, and the first two are this
+   branch's own. The source textarea used to be the fourth and worst — `focus:outline-none` with
+   nothing in its place, no indicator at all — and now takes this one.
    `outline` rather than a box-shadow ring: it needs no ring-offset-color kept in step with whatever
    the control happens to sit on, it traces the control's own border-radius, and it survives
    forced-colors mode, where box-shadows are dropped. 2px is the minimum thickness WCAG 2.4.11 asks

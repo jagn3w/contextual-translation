@@ -167,12 +167,20 @@ module Translation
       T::Hash[Symbol, T.untyped]
     )
 
-    # Whether this request is short enough to ask for the translation a second time with readings
-    # added (see FURIGANA_LIMIT). Result.for_request asks the same question of the response, so a
-    # model that annotates anyway can't spend the reader's translation on it.
+    # Whether this request gets readings at all: a Japanese target, and a source short enough to
+    # ask for the translation a second time with readings added (see FURIGANA_LIMIT).
+    #
+    # The whole question, not half of it, because two places have to give the same answer — the
+    # <readings> switch in the user message and the gate in Result.for_request — and a predicate
+    # that knew only about length left the other clause to be remembered at each site. It was
+    # already being forgotten here: a twenty-character English-to-Spanish request was told
+    # `<readings>on</readings>`, inviting output tokens and latency for a "furigana" string no
+    # Spanish reply can have, and only a separate sentence in SYSTEM stood between that and a
+    # wasted round trip. Result.for_request asks this same question of the response, so a model
+    # that annotates anyway can't spend the reader's translation on it.
     sig { params(request: Request).returns(T::Boolean) }
     def self.furigana?(request)
-      request.source_text.length <= FURIGANA_LIMIT
+      request.target_language == Language::JA && request.source_text.length <= FURIGANA_LIMIT
     end
 
     sig { params(request: Request).returns(String) }
