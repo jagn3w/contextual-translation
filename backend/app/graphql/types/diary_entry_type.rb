@@ -6,7 +6,8 @@ module Types
     graphql_name "DiaryEntry"
     description "One diary entry, private to the access code that wrote it."
 
-    field :id, ID, null: false
+    field :id, ID, null: false, method: :public_id,
+      description: "A random UUID; internal ids are never exposed."
     field :language, Types::LanguageType, null: false, description: "The language the entry is written in."
     field :notes_language, Types::LanguageType, null: false,
       description: "The learner's own language: feedback, tips, hints and replies are written in it."

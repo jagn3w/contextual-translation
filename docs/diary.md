@@ -11,6 +11,9 @@ homework. This file is the design and the contract between the backend and the f
   Rails already serves the SPA for every HTML path.
 - Diaries are private to the **access code** that created them. Every read and write is scoped to
   `current_session.access_code`; another code's entry id behaves exactly like a missing one.
+- Every id the API exposes or accepts (entries, threads, comments; the `/diary/<id>` URL) is a
+  random UUID, the record's `public_id`. Internal ids never leave the database, so nothing reveals
+  how many entries exist; a malformed id behaves like a missing one.
 - An entry has a **language** (what it is written in) and a **notes language** (the learner's own
   language: feedback, tips, hints and replies are written in it). A new entry defaults to the pair of
   the most recent entry, else English notes / Japanese writing (the Phrases showcase pair).
@@ -84,6 +87,10 @@ go with the likeliest meaning and say so. A grammatical but literal sentence is 
   body). Foreign keys with cascade delete. `review_round` is the entry's review count when a
   SENTENCE or ENTRY thread was created (null for HELP), so "the most recent round" is a query, not
   a guess.
+- Each diary table has `public_id uuid NOT NULL DEFAULT gen_random_uuid()` (unique index): the
+  only id in GraphQL input and output (`PublicId.parse` rejects anything not UUID-shaped before it
+  reaches Postgres). The bigint primary keys come from app-wide sequences, so they stay internal:
+  foreign keys and `order(:id)` only.
 - `Diary::Tutor` interface with `FakeTutor` (deterministic; TRANSLATOR=fake, tests, CI) and
   `ClaudeTutor` (structured outputs, one prompt per operation). Both share the one Anthropic client and
   the call/retry/deadline/credential machinery with `ClaudeTranslator`, so there is one WIF token
@@ -102,7 +109,7 @@ enum DiaryThreadKind { SENTENCE ENTRY HELP }
 enum DiaryAuthor { LEARNER TUTOR }
 
 type DiaryEntry {
-  id: ID!
+  id: ID!                           # public_id, a random UUID (every diary id is one)
   language: Language!
   notesLanguage: Language!
   body: String!

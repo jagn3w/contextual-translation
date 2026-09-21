@@ -6,6 +6,9 @@
 
 
 class Types::SuggestDiaryTopicsInputType
+  sig { returns(T.nilable(::String)) }
+  def body; end
+
   sig { returns(::Translation::Language) }
   def language; end
 

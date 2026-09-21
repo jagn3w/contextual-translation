@@ -12,15 +12,18 @@ module Mutations
       context.fetch(:current_session)
     end
 
+    # `id` is the public id (PublicId); a malformed one is NOT_FOUND like a missing one.
     sig { params(id: T.untyped).returns(DiaryEntry) }
     def find_entry!(id)
-      session.access_code.diary_entries.find_by(id:) || not_found!("diary entry")
+      public_id = PublicId.parse(id) || not_found!("diary entry")
+      session.access_code.diary_entries.find_by(public_id:) || not_found!("diary entry")
     end
 
     sig { params(id: T.untyped).returns(DiaryThread) }
     def find_thread!(id)
+      public_id = PublicId.parse(id) || not_found!("diary thread")
       DiaryThread.joins(:diary_entry).where(diary_entries: { access_code_id: session.access_code.id })
-        .find_by(id:) || not_found!("diary thread")
+        .find_by(public_id:) || not_found!("diary thread")
     end
 
     sig { params(what: String).returns(T.noreturn) }

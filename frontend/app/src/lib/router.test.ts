@@ -15,7 +15,9 @@ describe("parseRoute", () => {
   });
 
   it("round-trips with routePath", () => {
-    for (const path of ["/", "/diary", "/diary/abc-1"]) expect(routePath(parseRoute(path))).toBe(path);
+    // Entry ids are opaque strings: in production a random UUID.
+    const uuid = "/diary/0b6f3c52-8d1e-4a7b-9c2d-5e4f6a7b8c9d";
+    for (const path of ["/", "/diary", "/diary/abc-1", uuid]) expect(routePath(parseRoute(path))).toBe(path);
   });
 });
 

@@ -918,6 +918,51 @@ class DiaryEntry
     sig { void }
     def notes_language_will_change!; end
 
+    sig { returns(::String) }
+    def public_id; end
+
+    sig { params(value: ::String).returns(::String) }
+    def public_id=(value); end
+
+    sig { returns(T::Boolean) }
+    def public_id?; end
+
+    sig { returns(T.nilable(::String)) }
+    def public_id_before_last_save; end
+
+    sig { returns(T.untyped) }
+    def public_id_before_type_cast; end
+
+    sig { returns(T::Boolean) }
+    def public_id_came_from_user?; end
+
+    sig { returns(T.nilable([::String, ::String])) }
+    def public_id_change; end
+
+    sig { returns(T.nilable([::String, ::String])) }
+    def public_id_change_to_be_saved; end
+
+    sig { params(from: T.untyped, to: T.untyped).returns(T::Boolean) }
+    def public_id_changed?(from: T.unsafe(nil), to: T.unsafe(nil)); end
+
+    sig { returns(T.nilable(::String)) }
+    def public_id_in_database; end
+
+    sig { returns(T.nilable([::String, ::String])) }
+    def public_id_previous_change; end
+
+    sig { params(from: T.untyped, to: T.untyped).returns(T::Boolean) }
+    def public_id_previously_changed?(from: T.unsafe(nil), to: T.unsafe(nil)); end
+
+    sig { returns(T.nilable(::String)) }
+    def public_id_previously_was; end
+
+    sig { returns(T.nilable(::String)) }
+    def public_id_was; end
+
+    sig { void }
+    def public_id_will_change!; end
+
     sig { void }
     def restore_access_code_id!; end
 
@@ -938,6 +983,9 @@ class DiaryEntry
 
     sig { void }
     def restore_notes_language!; end
+
+    sig { void }
+    def restore_public_id!; end
 
     sig { void }
     def restore_review_count!; end
@@ -1128,6 +1176,12 @@ class DiaryEntry
     sig { params(from: T.untyped, to: T.untyped).returns(T::Boolean) }
     def saved_change_to_notes_language?(from: T.unsafe(nil), to: T.unsafe(nil)); end
 
+    sig { returns(T.nilable([::String, ::String])) }
+    def saved_change_to_public_id; end
+
+    sig { params(from: T.untyped, to: T.untyped).returns(T::Boolean) }
+    def saved_change_to_public_id?(from: T.unsafe(nil), to: T.unsafe(nil)); end
+
     sig { returns(T.nilable([::Integer, ::Integer])) }
     def saved_change_to_review_count; end
 
@@ -1217,6 +1271,9 @@ class DiaryEntry
 
     sig { params(from: T.untyped, to: T.untyped).returns(T::Boolean) }
     def will_save_change_to_notes_language?(from: T.unsafe(nil), to: T.unsafe(nil)); end
+
+    sig { params(from: T.untyped, to: T.untyped).returns(T::Boolean) }
+    def will_save_change_to_public_id?(from: T.unsafe(nil), to: T.unsafe(nil)); end
 
     sig { params(from: T.untyped, to: T.untyped).returns(T::Boolean) }
     def will_save_change_to_review_count?(from: T.unsafe(nil), to: T.unsafe(nil)); end

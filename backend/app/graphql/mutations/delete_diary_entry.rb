@@ -14,7 +14,7 @@ module Mutations
     def resolve(input:)
       entry = find_entry!(input.id)
       entry.destroy!
-      { deleted_id: entry.id }
+      { deleted_id: entry.public_id }
     end
   end
 end

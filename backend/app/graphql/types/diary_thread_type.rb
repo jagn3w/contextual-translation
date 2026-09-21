@@ -7,7 +7,8 @@ module Types
     description "A tutor thread on a diary entry: a sentence's verdict, an entry-wide note, or a " \
                 "\"Help me say…\" question."
 
-    field :id, ID, null: false
+    field :id, ID, null: false, method: :public_id,
+      description: "A random UUID; internal ids are never exposed."
     field :kind, Types::DiaryThreadKindType, null: false
     field :verdict, Types::DiaryVerdictType, description: "SENTENCE only."
     field :sentence, String, description: "SENTENCE: the sentence as reviewed. HELP: the question."

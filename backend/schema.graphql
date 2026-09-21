@@ -8,6 +8,9 @@ input DeleteDiaryEntryInput {
 }
 
 type DeleteDiaryEntryPayload {
+  """
+  The deleted entry's public id.
+  """
   deletedId: ID
 }
 
@@ -30,6 +33,10 @@ type DiaryComment {
   author: DiaryAuthor!
   body: String!
   createdAt: ISO8601DateTime!
+
+  """
+  A random UUID; internal ids are never exposed.
+  """
   id: ID!
 }
 
@@ -39,6 +46,10 @@ One diary entry, private to the access code that wrote it.
 type DiaryEntry {
   body: String!
   createdAt: ISO8601DateTime!
+
+  """
+  A random UUID; internal ids are never exposed.
+  """
   id: ID!
 
   """
@@ -96,6 +107,10 @@ type DiaryThread {
   HELP: how many general hints have been given.
   """
   hintLevel: Int!
+
+  """
+  A random UUID; internal ids are never exposed.
+  """
   id: ID!
   kind: DiaryThreadKind!
 

@@ -91,7 +91,7 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     body = graphql(UPDATE, variables: { input: { id: entry["id"], language: "JA" } })
 
     assert_equal "INVALID", body.dig("errors", 0, "extensions", "code")
-    assert_equal "es", DiaryEntry.find(entry["id"]).language
+    assert_equal "es", DiaryEntry.find_by!(public_id: entry["id"]).language
     same = mutate(UPDATE, "updateDiaryEntry", id: entry["id"], language: "ES", body: "Hola otra vez.")
     assert_empty same["errors"], "restating the same pair is not a change"
   end
@@ -106,7 +106,7 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     updated = mutate(UPDATE, "updateDiaryEntry", id: entry["id"], language: "EN", body: "changed")
     assert_nil updated["entry"]
     assert_equal [ "SAME_LANGUAGE" ], updated["errors"].pluck("code")
-    assert_equal [ "es", "" ], DiaryEntry.find(entry["id"]).then { |record| [ record.language, record.body ] }
+    assert_equal [ "es", "" ], DiaryEntry.find_by!(public_id: entry["id"]).then { |record| [ record.language, record.body ] }
   end
 
   test "two entries on the same day both exist, newest first" do
@@ -142,8 +142,8 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
       assert_equal "NOT_FOUND", body.dig("errors", 0, "extensions", "code"), mutation.lines.first
     end
 
-    assert_equal "Hola. Me llamo Ana.", DiaryEntry.find(entry["id"]).body
-    assert_not DiaryThread.find(thread_id).resolved?
+    assert_equal "Hola. Me llamo Ana.", DiaryEntry.find_by!(public_id: entry["id"]).body
+    assert_not DiaryThread.find_by!(public_id: thread_id).resolved?
   end
 
   test "a missing id is NOT_FOUND, not INTERNAL" do
@@ -151,6 +151,72 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
 
     assert_equal "NOT_FOUND", body.dig("errors", 0, "extensions", "code")
     assert_equal "No such diary entry.", body.dig("errors", 0, "message")
+  end
+
+  UUID = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
+
+  test "every id in a response is a random UUID, never the internal id" do
+    entry = create_entry
+    reviewed = mutate(REVIEW, "reviewDiaryEntry", id: entry["id"], body: "Hola. Me llamo Ana.")["entry"]
+    thread = reviewed["threads"].first
+    comment = thread["comments"].first
+
+    record = DiaryEntry.find_by!(public_id: entry["id"])
+    [
+      [ entry["id"], record ],
+      [ thread["id"], record.threads.first ],
+      [ comment["id"], DiaryComment.find_by!(diary_thread: record.threads.first) ]
+    ].each do |id, model|
+      assert_match UUID, id
+      assert_equal model.public_id, id
+      assert_not_equal model.id.to_s, id
+    end
+    assert_equal entry["id"], graphql(DELETE, variables: { input: { id: entry["id"] } }).dig("data", "deleteDiaryEntry", "deletedId")
+  end
+
+  test "an internal id does not find a record" do
+    entry = create_entry
+    thread_id = mutate(HELP, "startDiaryHelpThread", entryId: entry["id"], question: "How do I say hi?").dig("thread", "id")
+    internal_entry_id = DiaryEntry.find_by!(public_id: entry["id"]).id.to_s
+    internal_thread_id = DiaryThread.find_by!(public_id: thread_id).id.to_s
+
+    assert_nil graphql(SHOW, variables: { id: internal_entry_id }).dig("data", "diaryEntry")
+    [
+      [ UPDATE, { id: internal_entry_id, body: "x" } ],
+      [ DELETE, { id: internal_entry_id } ],
+      [ HELP, { entryId: internal_entry_id, question: "q" } ],
+      [ HINT, { threadId: internal_thread_id } ]
+    ].each do |mutation, input|
+      assert_equal "NOT_FOUND", graphql(mutation, variables: { input: }).dig("errors", 0, "extensions", "code"), mutation.lines.first
+    end
+    assert DiaryEntry.exists?(public_id: entry["id"])
+  end
+
+  test "a malformed or unknown id is null or NOT_FOUND, not INTERNAL" do
+    create_entry
+    [ "123", "someone-elses", "", "#{SecureRandom.uuid}x", SecureRandom.uuid ].each do |id|
+      show = graphql(SHOW, variables: { id: })
+      assert_nil show["errors"], id
+      assert_nil show.dig("data", "diaryEntry"), id
+      [
+        [ UPDATE, { id:, body: "x" } ],
+        [ DELETE, { id: } ],
+        [ REVIEW, { id:, body: "x" } ],
+        [ HELP, { entryId: id, question: "q" } ],
+        [ REPLY, { threadId: id, body: "q" } ],
+        [ HINT, { threadId: id } ],
+        [ RESOLVE, { threadId: id, resolved: true } ]
+      ].each do |mutation, input|
+        body = graphql(mutation, variables: { input: })
+        assert_equal "NOT_FOUND", body.dig("errors", 0, "extensions", "code"), "#{id.inspect} #{mutation.lines.first}"
+      end
+    end
+  end
+
+  test "an id is found whatever its letter case" do
+    entry = create_entry
+
+    assert_equal entry["id"], graphql(SHOW, variables: { id: entry["id"].upcase }).dig("data", "diaryEntry", "id")
   end
 
   test "a review saves the body and opens a located thread per sentence plus entry notes" do
@@ -270,8 +336,8 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
       mutate(HELP, "startDiaryHelpThread", entryId: entry["id"], question: " ").dig("errors", 0, "code")
     assert_equal "INPUT_TOO_LONG",
       mutate(HELP, "startDiaryHelpThread", entryId: entry["id"], question: "q" * 2_001).dig("errors", 0, "code")
-    assert_equal "", DiaryEntry.find(entry["id"]).body
-    assert_empty DiaryThread.where(diary_entry_id: entry["id"])
+    assert_equal "", DiaryEntry.find_by!(public_id: entry["id"]).body
+    assert_empty DiaryThread.where(diary_entry: DiaryEntry.find_by!(public_id: entry["id"]))
   end
 
   test "a tutor failure is a TranslateError and saves nothing" do
@@ -285,7 +351,7 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
     assert_nil result["entry"]
     assert_equal [ { "code" => "UPSTREAM_OVERLOADED", "message" => "Claude is temporarily overloaded.",
                      "retryable" => true, "retryAfterSeconds" => nil } ], result["errors"]
-    assert_equal "", DiaryEntry.find(entry["id"]).body
+    assert_equal "", DiaryEntry.find_by!(public_id: entry["id"]).body
   end
 
   test "tutor calls count against the translation rate limit" do
@@ -312,7 +378,7 @@ class DiaryGraphqlTest < ActionDispatch::IntegrationTest
                    "b: reviewDiaryEntry(input: #{input}) { errors { code } } }")
 
     assert_match(/complexity/, body.dig("errors", 0, "message"))
-    assert_equal 0, DiaryEntry.find(entry["id"]).review_count
+    assert_equal 0, DiaryEntry.find_by!(public_id: entry["id"]).review_count
   end
 
   test "the full selection of a tutor mutation and of the list stays inside the complexity and depth limits" do

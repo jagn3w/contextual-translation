@@ -5,7 +5,8 @@ module Types
   class DiaryCommentType < Types::BaseObject
     graphql_name "DiaryComment"
 
-    field :id, ID, null: false
+    field :id, ID, null: false, method: :public_id,
+      description: "A random UUID; internal ids are never exposed."
     field :author, Types::DiaryAuthorType, null: false
     field :body, String, null: false
     field :created_at, GraphQL::Types::ISO8601DateTime, null: false

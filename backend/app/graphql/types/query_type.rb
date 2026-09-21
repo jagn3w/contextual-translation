@@ -24,7 +24,8 @@ module Types
 
     sig { params(id: String).returns(T.nilable(DiaryEntry)) }
     def diary_entry(id:)
-      current_session.access_code.diary_entries.find_by(id:)
+      public_id = PublicId.parse(id) or return nil
+      current_session.access_code.diary_entries.find_by(public_id:)
     end
 
     private
