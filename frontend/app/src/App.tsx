@@ -78,5 +78,7 @@ function SessionBoundary({ sessionEnded, onRestart }: BoundaryProps) {
   }
   if (loading || data === undefined) return <StatusScreen message="Loading…" />;
 
-  return <TranslatePage viewer={data.viewer} onSignOut={() => void handleSignOut()} />;
+  // The page shows nothing from the viewer itself; the query is still what restores the
+  // session (design D4.2), and reaching here at all is what says there is one.
+  return <TranslatePage onSignOut={() => void handleSignOut()} />;
 }

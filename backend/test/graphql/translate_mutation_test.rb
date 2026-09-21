@@ -6,7 +6,10 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
   MUTATION = <<~GRAPHQL
     mutation Translate($input: TranslateInput!) {
       translate(input: $input) {
-        translation { text notes sourceLanguage targetLanguage }
+        translation {
+          text notes furigana glossesTruncated readingsOmitted sourceLanguage targetLanguage
+          glosses { text reading meaning startsAt length }
+        }
         errors { code message retryable retryAfterSeconds }
       }
     }
@@ -34,6 +37,15 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
         "translation" => {
           "text" => "[ES] Is this a bat?",
           "notes" => "Fake translation using context: Baseball game",
+          "furigana" => nil,
+          "glossesTruncated" => false,
+          "readingsOmitted" => false,
+          "glosses" => [
+            { "text" => "[ES]", "reading" => nil, "meaning" => "fake target-language tag",
+              "startsAt" => 0, "length" => 4 },
+            { "text" => "bat?", "reading" => nil, "meaning" => "fake definition of bat?",
+              "startsAt" => 15, "length" => 4 }
+          ],
           "sourceLanguage" => "EN",
           "targetLanguage" => "ES"
         },
@@ -41,6 +53,97 @@ class TranslateMutationTest < ActionDispatch::IntegrationTest
       },
       body.dig("data", "translate")
     )
+  end
+
+  test "a Japanese target exposes furigana and glosses" do
+    translation = graphql(MUTATION, variables: { input: INPUT.merge(targetLanguage: "JA") })
+      .dig("data", "translate", "translation")
+
+    assert_equal "[日本語] Is this a bat?", translation["text"]
+    assert_equal "[日本語《にほんご》] Is this a bat?", translation["furigana"]
+    assert_equal(
+      [ { "text" => "[日本語]", "reading" => "にほんご", "meaning" => "fake target-language tag",
+          "startsAt" => 0, "length" => 5 },
+        { "text" => "bat?", "reading" => nil, "meaning" => "fake definition of bat?",
+          "startsAt" => 16, "length" => 4 } ],
+      translation["glosses"]
+    )
+    translation["glosses"].each do |gloss|
+      assert_equal gloss["text"], translation["text"][gloss["startsAt"], gloss["length"]]
+    end
+    assert_equal false, translation["glossesTruncated"], "this source never overruns the cap"
+    assert_equal false, translation["readingsOmitted"], "this source is well inside the furigana limit"
+  end
+
+  test "a source too long for readings says so in readingsOmitted, so the UI need not guess" do
+    long = "Is this a bat? " * 200
+
+    translation = graphql(MUTATION, variables: { input: INPUT.merge(targetLanguage: "JA", sourceText: long) })
+      .dig("data", "translate", "translation")
+
+    assert_operator long.length, :>, Translation::Prompt::FURIGANA_LIMIT
+    assert_nil translation["furigana"]
+    assert_equal true, translation["readingsOmitted"]
+  end
+
+  test "a source too long for readings is no degrade for a Spanish target" do
+    long = "Is this a bat? " * 200
+
+    translation = graphql(MUTATION, variables: { input: INPUT.merge(sourceText: long) })
+      .dig("data", "translate", "translation")
+
+    assert_equal false, translation["readingsOmitted"], "Spanish shows no readings either way"
+  end
+
+  test "an explicit null glossLevel behaves exactly like an omitted one" do
+    levels = []
+    recording = Class.new do
+      include Translation::Translator
+      define_method(:translate) do |request|
+        levels << request.gloss_level
+        Translation::FakeTranslator.new.translate(request)
+      end
+    end
+    Translation.translator = recording.new
+
+    body = graphql(MUTATION, variables: { input: INPUT.merge(glossLevel: nil) })
+
+    # `glossLevel: null` is legal under the committed schema — nullable, with a default — so it
+    # has to mean the default, not a top-level INTERNAL error.
+    assert_nil body["errors"]
+    # Read from the argument rather than written out again: the mutation coerces the null to the
+    # default the schema publishes, so this asserts the two agree rather than asserting the value
+    # twice. Change `default_value:` and a null request follows it; a re-spelled literal here (or
+    # in the mutation) is exactly how it would not.
+    assert_equal Translation::GlossLevel::NOTABLE, Types::TranslateInputType.gloss_level_default
+    assert_equal [ Types::TranslateInputType.gloss_level_default ], levels
+    assert_equal "[ES] Is this a bat?", body.dig("data", "translate", "translation", "text")
+    assert_empty body.dig("data", "translate", "errors")
+  end
+
+  test "glossLevel defaults to NOTABLE and accepts every level" do
+    levels = []
+    recording = Class.new do
+      include Translation::Translator
+      define_method(:translate) do |request|
+        levels << request.gloss_level
+        Translation::FakeTranslator.new.translate(request)
+      end
+    end
+    Translation.translator = recording.new
+
+    graphql(MUTATION, variables: { input: INPUT })
+    %w[NONE NOTABLE EVERY].each { |level| graphql(MUTATION, variables: { input: INPUT.merge(glossLevel: level) }) }
+
+    assert_equal [ Translation::GlossLevel::NOTABLE, Translation::GlossLevel::NONE,
+                   Translation::GlossLevel::NOTABLE, Translation::GlossLevel::EVERY ], levels
+  end
+
+  test "rejects an unknown gloss level at the schema level" do
+    body = graphql(MUTATION, variables: { input: INPUT.merge(glossLevel: "SOME") })
+
+    assert body["errors"].present?
+    assert_nil body["data"]
   end
 
   test "anticipated failures come back as typed errors" do

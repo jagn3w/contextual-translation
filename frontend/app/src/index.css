@@ -6,13 +6,64 @@
     "Noto Sans JP", sans-serif;
 
   --color-canvas: #ffffff;
+  /* The hover tint (header button, language pickers, Radix items): must stay light. */
   --color-surface: #f7f7f5;
+  /* The result frame alone: surface's hue and saturation (60deg, 11%) taken down to lightness 93,
+     so the target pane reads as a distinct, settled surface rather than a second sheet of paper. */
+  --color-frame: #efefeb;
+  /* The same frame four steps darker (lightness 89) for a result that is out of date. Staleness is
+     carried by the ground and by a named "Out of date" marker, never by dimming the ink: on this
+     background --color-ink is 9.6:1 and --color-frame-muted 5.7:1, both clear of WCAG AA. The
+     blanket opacity-60 this replaces composited the translation itself to 3.5:1 and Claude's note
+     to 2.6:1 — under AA, and getting worse each time the frame was darkened. */
+  --color-frame-stale: #e4e4de;
   --color-ink: #37352f;
   --color-muted: #787774;
-  --color-line: #e9e9e7;
+  /* --color-muted only reaches 3.9:1 on the frame; this one is 6.3:1, so secondary text inside the
+     result pane (the placeholder, Claude's note) still clears WCAG AA. */
+  --color-frame-muted: #585755;
+  --color-line: #d8d8d4;
   --color-accent: #2383e2;
   --color-accent-ink: #ffffff;
   --color-danger: #d44c47;
+  /* The focus indicator, kept as its own name because it is the one colour in here that answers to
+     a *non-text* rule: WCAG 1.4.11/2.4.11 want 3:1 between the indicator and what it sits on, and
+     that is measured against the backdrop, not against the ink. Full-strength accent, so:
+     on --color-canvas #ffffff  3.88:1
+     on --color-surface #f7f7f5 3.61:1  (the hover tint every one of these controls also shows)
+     on --color-frame   #efefeb 3.36:1  (the result pane, for when a control lands there)
+     all clear of 3:1. What it replaces was `focus-visible:ring-accent/30`, i.e.
+     color-mix(in oklab, #2383e2 30%, transparent): over the canvas that composites to
+     rgb(189,218,246) — 1.45:1 — and over the hover tint rgb(183,212,239) — 1.43:1. A ring nobody
+     can see is the same as no ring, and keyboard users are the only ones who ever get it. */
+  --color-focus: var(--color-accent);
+}
+
+/* The focus indicator itself, written once, for controls whose only focus affordance it is: both
+   language pickers, the definitions picker, the swap button and the source textarea. Spelling the
+   indicator out per control is what let it drift to three opacities across four of them, and an
+   indicator that is copied is an indicator that gets copied wrong. Ratios are recorded beside
+   --color-focus above.
+   Three controls do NOT use it yet, so this is not the universal it once claimed to be: the
+   glossed word (`ring-accent/40`, 1.66:1) is an inline element in flowing ruby text, where an
+   offset outline needs looking at in a browser before it is imposed; the context textarea and the
+   access-code field (`ring-accent/25`, 1.36:1) also shift `border-color` on focus, so they are
+   faint rather than absent. All three are recorded as deferred, and the first two are this
+   branch's own. The source textarea used to be the fourth and worst — `focus:outline-none` with
+   nothing in its place, no indicator at all — and now takes this one.
+   `outline` rather than a box-shadow ring: it needs no ring-offset-color kept in step with whatever
+   the control happens to sit on, it traces the control's own border-radius, and it survives
+   forced-colors mode, where box-shadows are dropped. 2px is the minimum thickness WCAG 2.4.11 asks
+   of a perimeter indicator, and the 2px offset keeps it off the glyphs. */
+@utility focus-ring {
+  /* Clicking and tapping stay quiet — the indicator is for keyboard navigation, which is the
+     behaviour `focus:outline-none` was there for. */
+  outline: none;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
 }
 
 @layer base {

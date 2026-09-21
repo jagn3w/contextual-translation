@@ -3,6 +3,16 @@ mutation Translate($input: TranslateInput!) {
     translation {
       text
       notes
+      furigana
+      glosses {
+        text
+        reading
+        meaning
+        startsAt
+        length
+      }
+      glossesTruncated
+      readingsOmitted
       sourceLanguage
       targetLanguage
     }
