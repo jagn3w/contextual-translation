@@ -139,6 +139,14 @@ class Diary::ClaudeTutorTest < ActiveSupport::TestCase
     end
   end
 
+  test "escapes Claude wrote out as text are decoded, surrogate pairs included" do
+    stub_request(:post, MESSAGES_URL).to_return(response(
+      text: '{"hint": "Use \\\\u306b\\\\u601d\\\\u3046 \\\\ud83d\\\\ude00 (\\\\ud83d alone stays)", "clarifying": false}'
+    ))
+
+    assert_equal "Use に思う 😀 (\\ud83d alone stays)", hint_request.text
+  end
+
   test "a hint says whether it is a question about what the student means, and must say so" do
     stub_request(:post, MESSAGES_URL).to_return(response(hint: "Eat one, or have one?", clarifying: true))
     assert hint_request.clarifying

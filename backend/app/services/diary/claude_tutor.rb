@@ -38,6 +38,9 @@ module Diary
     #   ~2,000 (the sentence, if the question was that long) + ~300 (its explanation) ≈ 2,300 tokens
     # Three topics with glosses are ~200 tokens.
     SHORT_MAX_TOKENS = 4_000
+    # A run of \uXXXX escapes written out as text. Claude sometimes JSON-escapes a character twice
+    # ("\\u306b" in the JSON), so after parsing, the learner would read the escape, not the kana.
+    LITERAL_ESCAPES = T.let(/(?:\\u\h{4})+/, Regexp)
 
     sig do
       params(
@@ -144,7 +147,26 @@ module Diary
         nil
       end
       unreadable!("unparseable (#{text.bytesize} bytes, stop=#{message.stop_reason})") unless parsed.is_a?(Hash)
-      parsed
+      T.cast(unescape(parsed), T::Hash[String, T.untyped])
+    end
+
+    # Decodes the literal \uXXXX escapes left in every string of the parsed reply. A run is decoded
+    # whole, so a surrogate pair becomes its one character; a run that does not decode (a lone
+    # surrogate) is left as it was.
+    sig { params(value: T.untyped).returns(T.untyped) }
+    def unescape(value)
+      case value
+      when Hash then value.transform_values { |inner| unescape(inner) }
+      when Array then value.map { |inner| unescape(inner) }
+      when String
+        value.gsub(LITERAL_ESCAPES) do |run|
+          decoded = JSON.parse(%("#{run}"))
+          decoded.valid_encoding? ? decoded : run
+        rescue JSON::ParserError
+          run
+        end
+      else value
+      end
     end
 
     sig { params(entry: T.untyped).returns(T.nilable(SentenceFeedback)) }
