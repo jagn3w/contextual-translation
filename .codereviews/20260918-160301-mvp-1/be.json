@@ -1,0 +1,104 @@
+{
+ "range": "main...mvp -- backend/app backend/lib backend/config backend/db backend/eval backend/bin backend/Gemfile backend/.env.example",
+ "effort": "low",
+ "verified": false,
+ "reviewers": 3,
+ "features": [
+  "Access-code authentication and abuse protection",
+  "Contextual translation via GraphQL (Claude-backed) with eval harness",
+  "App shell, SPA hosting and deployment config"
+ ],
+ "context": {
+  "conventions": true,
+  "design": true,
+  "patterns": true
+ },
+ "raw": 8,
+ "refuted": 0,
+ "findings": [
+  {
+   "file": "backend/app/services/translation/claude_translator.rb",
+   "line": 74,
+   "summary": "The first Claude call passes empty request options, so the beta SDK uses its 600 s default instead of the 30 s client timeout. A stalled first attempt then blocks a Puma thread for up to 10 minutes, and the user gets nginx's 504 instead of TIMEOUT.",
+   "scenario": "In anthropic-1.71.0 `Beta::Messages#create`, `options.empty? && @client.timeout == DEFAULT_TIMEOUT_IN_SECONDS` is false because the client timeout is 30, so the SDK sets `{timeout: 600}`. The finder says it confirmed this with `rails runner`. Only the retry, which passes `timeout:`, is bounded. When Claude stalls, CapRover's nginx cuts the connection at 60 s, and the thread (one of 8) stays blocked, so a few stalls starve the app. The webmock `to_timeout` test raises at once and cannot catch this. Unverified, but the scenario is specific and includes a runtime check.",
+   "fix": "Always pass an explicit timeout, for example `timeout: [DEADLINE_SECONDS - elapsed, TIMEOUT_SECONDS].min`, on the first call as well. Add a test that asserts the options the SDK receives.",
+   "severity": "must-fix",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation via GraphQL (Claude-backed) with eval harness"
+  },
+  {
+   "file": "backend/config/initializers/rack_attack.rb",
+   "line": 23,
+   "summary": "The rack-attack rules compare the raw `req.path` to exact strings, but the router normalizes paths. So `/api/session/`, `//api/session` and `/graphql/` reach the same controllers and skip every login throttle, the LoginBan blocklist and the GraphQL per-IP cap.",
+   "scenario": "An attacker or a banned IP sends `POST /api/session/` with a valid Origin. Rack::Attack sees a path that does not equal SESSION_PATH, so the 5/min and 20/hr throttles and the ban do not match. `RouteSet#call` then normalizes the path, and `recognize_path` routes it to `Api::SessionsController#create`. Failures are still recorded, but the ban never blocks this variant. CapRover's nginx forwards the raw URI, so production is affected. This is the same bypass class as the `.json` suffix that commit a68d87c fixed, and the tests cover only `.json`. Unverified, but the scenario names the exact code paths.",
+   "fix": "Match every rule against `Journey::Router::Utils.normalize_path(req.path)`, or reject non-canonical paths before Rack::Attack runs. Add trailing-slash and double-slash cases to rack_attack_test.rb.",
+   "severity": "must-fix",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Access-code authentication and abuse protection"
+  },
+  {
+   "file": "backend/app/services/claude/client_factory.rb",
+   "line": 61,
+   "summary": "The WIF token refresh (STS plus the Anthropic exchange) runs while the request is being built, before the SDK's deadline starts. Up to about 60 s or more of auth time counts against no timeout and no part of the 55 s budget, so a slow refresh ends in a 504.",
+   "scenario": "On the roughly hourly token refresh, a slow token endpoint can use 30 s to connect plus 30 s to read (TOKEN_EXCHANGE_TIMEOUT). Aws::STS::Client defaults allow a 60 s read timeout and 3 retries. The Messages call then gets its full timeout on top, so the request passes the 60 s proxy limit and returns 504 instead of UPSTREAM_UNREACHABLE. This needs a slow token endpoint during a refresh. It is a separate defect from the 600 s first-call timeout and needs a separate fix.",
+   "fix": "Give the STS client short http_open/read timeouts and retry_limit 0. Bound the token exchange by the remaining deadline, or refresh the token outside the request path.",
+   "severity": "concern",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation via GraphQL (Claude-backed) with eval harness"
+  },
+  {
+   "file": "backend/app/services/translation.rb",
+   "line": 21,
+   "summary": "TRANSLATOR defaults to `fake` in production, so a container without it boots and serves fake translations, and both the boot check and `claude:auth_check` report success.",
+   "scenario": "If the CapRover config is missing TRANSLATOR (a typo or a config reset), the after_initialize hook builds FakeTranslator. The user sees '[ES] Is this a bat?'. The post-deploy `bin/rails claude:auth_check` prints 'ok (Translation::FakeTranslator)' and exits 0. This needs a misconfiguration, but when it happens every check stays silent.",
+   "fix": "In production, use ENV.fetch with no default or reject `fake`. Make claude:auth_check abort unless the translator is a ClaudeTranslator.",
+   "severity": "concern",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation via GraphQL (Claude-backed) with eval harness"
+  },
+  {
+   "file": "backend/app/services/translation/claude_error_mapper.rb",
+   "line": 43,
+   "summary": "The WIF network-error branch does not map OpenSSL::SSL::SSLError or Net::ProtocolError/HTTPBadResponse, so TLS or protocol failures during the token exchange surface as INTERNAL instead of a specific code.",
+   "scenario": "A transient 'SSL_connect SYSCALL returned=5' during a token refresh, raised from WorkloadIdentity#perform_exchange outside the SDK's own rescue, matches none of Timeout::Error, SocketError, SystemCallError or IOError. The schema catch-all then returns INTERNAL. The request fails either way, so the harm is the wrong error code on a request that was already failing.",
+   "fix": "Add OpenSSL::SSL::SSLError and Net::ProtocolError / Net::HTTPBadResponse to the network branch.",
+   "severity": "nit",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation via GraphQL (Claude-backed) with eval harness"
+  },
+  {
+   "file": "backend/lib/translation_eval/runner.rb",
+   "line": 49,
+   "summary": "run_case rescues only Translation::Error, so one unmapped Claude error (400, 413 or 422) aborts the whole `eval:translations` run and loses the summary.",
+   "scenario": "With EFFORTS=low,medium, a 400 from a prompt change on case 5 kills the rake task before the p50/p95 summary and the second effort run, after the earlier cases have already been paid for. This affects dev tooling only.",
+   "fix": "Rescue StandardError in run_case and record it as a failure.",
+   "severity": "nit",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation via GraphQL (Claude-backed) with eval harness"
+  },
+  {
+   "file": "backend/app/services/translation/rate_limiter.rb",
+   "line": 54,
+   "summary": "The limiter raises at the first counter that is over its limit, so the counters after it are never incremented, which contradicts the doc comment and D3.4's claim that every counter is incremented before checking.",
+   "scenario": "On the 11th call in a minute, `session-minute` trips and raises, so `session-day`, `code-minute` and `code-day` are not incremented for that attempt. No Claude call gets through, so only the documentation is wrong.",
+   "fix": "Increment all counters and then check them, or correct the comment and D3.4.",
+   "severity": "nit",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation via GraphQL (Claude-backed) with eval harness"
+  }
+ ],
+ "scopes": {
+  "blocking": 7,
+  "introduced": 7,
+  "aggravated": 0,
+  "preExisting": 0
+ },
+ "note": "Nothing merged. The 600 s first-call timeout and the WIF auth time outside the deadline are both about timeouts, but each needs its own fix. The must-fix set has two findings: an unbounded 600 s first call that can starve Puma's 8 threads, and a trailing-slash bypass of the login throttle and ban. Each breaks the design on ordinary input, so I would hold the merge for either one. I demoted the error-mapper TLS finding from concern to nit because its only harm is the wrong error code on a request that fails anyway. I moved 0 findings between scopes: nothing showed the code was unchanged in the range, so all seven stay `introduced`. All findings are still unverified. Findings 1 and 2 give specific, checkable mechanisms, so whoever picks them up can confirm them quickly."
+}

@@ -11,6 +11,20 @@ features, [docs/phrases.md](docs/phrases.md) and [docs/diary.md](docs/diary.md),
 refer to [design/design.md](design/design.md), which records every decision and the task list it
 governs in [design/tasks.md](design/tasks.md).
 
+## How it was built
+
+Design first: every decision in [design/design.md](design/design.md) was settled and signed off
+before the code it governs was written, and each one names the tasks it covers. That is why code
+comments can cite a decision number — the reasoning is recorded somewhere, not reconstructed after
+the fact.
+
+Reviewed before landing: the runs are in [.codereviews/](.codereviews/), one directory per review,
+each finding with a concrete failure scenario and a proposed fix. Several commits exist only to
+fix what a review turned up.
+
+Both were driven from [jkb](https://github.com/jagn3w/jkb), a task and review harness, with Claude
+doing the implementation against the approved design.
+
 ## Layout
 
 | Path | What |

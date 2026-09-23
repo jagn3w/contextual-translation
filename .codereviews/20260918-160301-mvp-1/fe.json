@@ -1,0 +1,159 @@
+{
+ "range": "main...mvp -- frontend :!frontend/pnpm-lock.yaml :!frontend/app/src/gql Dockerfile .dockerignore captain-definition bin docs .github README.md",
+ "effort": "low",
+ "verified": false,
+ "reviewers": 3,
+ "features": [
+  "Access-code sign-in and session lifecycle",
+  "Contextual translation page",
+  "Frontend workspace, quality gates, build and release pipeline"
+ ],
+ "context": {
+  "conventions": true,
+  "design": true,
+  "patterns": true
+ },
+ "raw": 12,
+ "refuted": 0,
+ "findings": [
+  {
+   "file": "frontend/app/src/pages/TranslatePage.tsx",
+   "line": 83,
+   "summary": "Swap replaces the source pane with the last translation even after the source was edited, so the user's unsubmitted text is lost with no undo. `stale` compares only the languages, so an out-of-date result shows as current.",
+   "scenario": "Translate \"Hello\" EN->ES to get \"Hola\". Replace the source with a new paragraph, which is not re-sent because translation is manual. Click swap: setSourceText(\"Hola\") runs and the paragraph is gone. Separately, after editing the source or context, or after a failed re-translate, the old result stays at full opacity as if it matched the current input. Unverified: the reasoning is concrete and consistent on its face.",
+   "fix": "Store the sourceText and context each translation was made from. Dim the result when either differs. When the source has changed, swap only the languages, or ask first.",
+   "severity": "must-fix",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation page"
+  },
+  {
+   "file": "frontend/app/src/lib/session.ts",
+   "line": 27,
+   "summary": "signOut ignores network errors and non-2xx responses, but only the server can clear the HttpOnly session cookie, so a failed sign-out quietly signs the user back in.",
+   "scenario": "The user clicks Sign out while offline, or the DELETE returns 403 forbidden_origin or 415. signOut resolves anyway. handleSignOut clears the store and remounts SessionBoundary. The Viewer query still sends the valid cookie, and TranslatePage renders again with no message. On a shared machine the 12-hour session stays live while the user believes they signed out. Unverified.",
+   "fix": "Treat only a 204 as success and return a RequestFailure otherwise. On failure, handleSignOut shows a toast and stays on the page instead of remounting.",
+   "severity": "concern",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Access-code sign-in and session lifecycle"
+  },
+  {
+   "file": "bin/check",
+   "line": 24,
+   "summary": "The throwaway Postgres always binds 127.0.0.1:5432, so bin/check aborts whenever the developer's own dev Postgres is already running, and each failed run leaves its temp cluster dir behind.",
+   "scenario": "The dev Postgres is running on 127.0.0.1:5432. PGHOST is set only in backend/.env, so the shell has none. `bin/check` (or `jkb task land`) calls start_throwaway_postgres, and pg_ctl fails with 'could not create listen socket'. Under set -e the gate aborts before any check runs. The EXIT trap is installed after pg_ctl, so the mktemp dir and its log are left behind. The finder reproduced this in the dev container.",
+   "fix": "Start the cluster on a free port, or on a unix socket inside PG_DIR, and export PGPORT/PGHOST to match. Install the trap before pg_ctl.",
+   "severity": "concern",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Frontend workspace, quality gates, build and release pipeline"
+  },
+  {
+   "file": "docs/runbook.md",
+   "line": 127,
+   "summary": "The runbook's fallback fix for a shared client IP (a trusted-proxy rule for CapRover's nginx) cannot work, and it contradicts the rack_attack initializer, which says not to set trusted_proxies.",
+   "scenario": "After release, the IP check shows 10.x or 172.x because the Swarm mesh SNATs traffic. The owner adds the trusted-proxy rule. rack-attack keys on req.ip, and X-Forwarded-For holds only the mesh IP, so nothing changes. All users still share one sign-in throttle bucket, and one bad code can ban everyone. Unverified: the mesh-SNAT reasoning is plausible but was not checked against the deployment.",
+   "fix": "Remove the trusted-proxy option. Document host-mode port publishing for nginx instead. Optionally have the check grep the app's 'Failed access-code sign-in from <ip>' log line.",
+   "severity": "concern",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Frontend workspace, quality gates, build and release pipeline"
+  },
+  {
+   "file": "frontend/app/src/lib/translateErrorMessage.ts",
+   "line": 95,
+   "summary": "Every RATE_LIMITED error, including the daily caps, shows 'You're translating quickly' with a Try again button that cannot succeed and that bumps the limit counters on each click.",
+   "scenario": "The session-day cap is hit with 17 hours left. The client ignores the server's per-limit message and shows 'You're translating quickly \u2014 try again in 17 hours.' with Try again. Each click is refused, and check! increments the counters before it compares. Unverified.",
+   "fix": "Show the server's per-limit message. Hold back Try again until retryAfterSeconds has passed, or offer it only when the wait is short.",
+   "severity": "concern",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation page"
+  },
+  {
+   "file": "frontend/app/src/pages/TranslatePage.tsx",
+   "line": 206,
+   "summary": "The aria-live region is inserted already holding its text on each result, so screen readers generally do not announce the translation.",
+   "scenario": "The loading branch unmounts the <p aria-live=\"polite\">. When the result arrives, a new, already-filled region is inserted. NVDA, JAWS and VoiceOver announce changes to an existing region, not the insertion of a new one. Unverified: this relies on general screen-reader behaviour, not on a test with an actual reader.",
+   "fix": "Keep one live region mounted outside the loading and empty branches, and update only its text.",
+   "severity": "concern",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation page"
+  },
+  {
+   "file": "frontend/app/src/pages/TranslatePage.tsx",
+   "line": 112,
+   "summary": "A translation still in flight at sign-out puts its error toast on the access-code gate after the page has unmounted, and that toast's Try again does nothing.",
+   "scenario": "A request is heading for TIMEOUT (up to about 55 s) and the user clicks Sign out, which stays enabled while loading. The unmount effect dismisses TOAST_ID before the toast exists. The mutation then settles and toast.error appears over the gate. Its retry closure was captured while loading=true, so it is a no-op. The case needs sign-out during a slow request, which is narrower than normal use. Unverified.",
+   "fix": "Keep a mounted ref or abort the request with an AbortController on unmount, and skip state updates and toasts after unmount.",
+   "severity": "concern",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation page"
+  },
+  {
+   "file": "bin/check",
+   "line": 72,
+   "summary": "bin/check accepts an unknown target, runs nothing, and reports 'All checks passed'.",
+   "scenario": "`bin/check fronted` in a CI step or jkb gate matches neither target and exits 0, so the gate shows green without running any checks.",
+   "fix": "Reject any argument other than backend or frontend with a non-zero exit.",
+   "severity": "nit",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Frontend workspace, quality gates, build and release pipeline"
+  },
+  {
+   "file": ".github/workflows/ci.yml",
+   "line": 45,
+   "summary": "CI's `bin/bundler-audit --update` skips config/bundler-audit.yml, so CI never honours advisories on the ignore list, while local runs do.",
+   "scenario": "The wrapper adds --config only when ARGV is empty or includes 'check'. An advisory added to ignore: as that file instructs still fails CI.",
+   "fix": "Use `bin/bundler-audit check --update` in CI.",
+   "severity": "nit",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Frontend workspace, quality gates, build and release pipeline"
+  },
+  {
+   "file": "bin/smoke",
+   "line": 50,
+   "summary": "By default bin/smoke's health check hits the Vite dev server, which does not proxy /up, so the check passes on index.html while Rails is down.",
+   "scenario": "GET localhost:5173/up returns the SPA fallback with a 200. The script prints 'ok health check 200', and the real failure only shows up at sign-in as a confusing proxy error.",
+   "fix": "Add '/up' to Vite's server.proxy.",
+   "severity": "nit",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Frontend workspace, quality gates, build and release pipeline"
+  },
+  {
+   "file": "frontend/app/src/App.test.tsx",
+   "line": 76,
+   "summary": "The sign-out test's check that the 'session ended' notice is absent can never fail, because the status paragraph has no accessible name to match.",
+   "scenario": "queryByRole('status', {name: /session ended/i}) returns null even when the notice is shown. A regression to onRestart(true) would still pass. Unverified.",
+   "fix": "Assert with queryByText(/session ended/i). Also add the positive mid-use UNAUTHENTICATED case.",
+   "severity": "nit",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Access-code sign-in and session lifecycle"
+  },
+  {
+   "file": "frontend/app/src/pages/TranslatePage.tsx",
+   "line": 65,
+   "summary": "The client counts the 10,000/2,000 character limits in UTF-16 code units while the backend counts codepoints, so non-BMP text is wrongly blocked.",
+   "scenario": "6,000 emoji count as 12,000 on the client, so the button is disabled, while the backend would accept them.",
+   "fix": "Count codepoints on the client with [...text].length.",
+   "severity": "nit",
+   "scope": "introduced",
+   "kind": "defect",
+   "lenses": "area:Contextual translation page"
+  }
+ ],
+ "scopes": {
+  "blocking": 12,
+  "introduced": 12,
+  "aggravated": 0,
+  "preExisting": 0
+ },
+ "note": "No findings were merged. The two TranslatePage findings near the swap and stale logic share a root cause, so they were already one finding. The others are separate defects even where they share a file. The must-fix set has one finding, the Swap data loss: it is a common, one-click path that destroys text the user typed and cannot get back, which is the only finding here that passes the hold-the-merge test. The signOut fail-open is serious but needs a network or origin failure, so it stays a concern. No findings moved between scopes: all were filed as introduced, and nothing in the set shows the affected code is unchanged in the reviewed range. All findings remain unverified. The rack-attack mesh-SNAT, screen-reader live-region and accessible-name claims rest on outside behaviour that the finders reasoned about but did not test. The only finding the finder reproduced is the bin/check port collision."
+}
