@@ -8,7 +8,8 @@ How it works is written up in `docs/`: start with [docs/backend.md](docs/backend
 [docs/frontend.md](docs/frontend.md) and [docs/api_boundary.md](docs/api_boundary.md), then the two
 features, [docs/phrases.md](docs/phrases.md) and [docs/diary.md](docs/diary.md), and the prompts in
 [docs/prompts.md](docs/prompts.md). Code comments that cite design decision numbers ("design D2.3")
-refer to a design document kept outside this repository.
+refer to [design/design.md](design/design.md), which records every decision and the task list it
+governs in [design/tasks.md](design/tasks.md).
 
 ## Layout
 
@@ -24,6 +25,8 @@ refer to a design document kept outside this repository.
 | `docs/prompts.md` | Every request the app sends to Claude, and how to change a prompt safely |
 | `docs/diary.md` | The Diary page: product rules and the backend/frontend GraphQL contract |
 | `docs/runbook.md` | Standing up production |
+| `design/design.md` | The design decisions (D1–D5) the code comments cite, and why each was settled that way |
+| `design/tasks.md` | The task list those decisions govern, gated on `design=approved` |
 
 ## Toolchain
 

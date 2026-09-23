@@ -11,7 +11,9 @@
 /tmp/
 
 .scratch/
-design/
+design/*
+!design/design.md
+!design/tasks.md
 
 # Used by dotenv library to load environment variables.
 # .env
